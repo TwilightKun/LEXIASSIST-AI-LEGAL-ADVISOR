@@ -16,7 +16,6 @@
     "@prisma/adapter-neon": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "@upstash/workflow": "^1.3.1",
-    "@upstash/workflow-agents": "^0.2.0",
     "ai": "^6.0.223",
     "framer-motion": "^12.0.0",
     "next": "16.2.10",
