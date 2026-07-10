@@ -1,5 +1,6 @@
 "use client";
 
+import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
 
 export default function IpBox() {
@@ -11,10 +12,8 @@ export default function IpBox() {
         const res = await fetch("https://api.ipify.org?format=json");
         const data = await res.json();
 
-        // Mask the IP for the joke
-        const masked = data.ip.replace(/\.\d+\.\d+$/, ".xxx.xxx");
-
-        setIp(masked);
+        // Mask the last two octets for the joke
+       setIp(data.ip);
       } catch {
         setIp("Unknown");
       }
@@ -24,26 +23,64 @@ export default function IpBox() {
   }, []);
 
   return (
-    <div className="fixed bottom-6 right-6 w-72 rounded-lg border border-zinc-800 bg-black/70 p-4 font-mono text-xs text-zinc-300 backdrop-blur-md shadow-2xl">
-      <p className="mb-3 text-zinc-500">SYSTEM LOG</p>
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.8 }}
+      className="
+        mt-4
+        w-full
+        max-w-[280px]
+        sm:max-w-[320px]
+        rounded-sm
+        border
+        border-zinc-800/70
+        bg-white/[0.02]
+        p-3
+        sm:p-4
+        backdrop-blur-sm
+        font-mono
+        text-[10px]
+        sm:text-[11px]
+        tracking-[0.08em]
+        text-zinc-500
+      "
+    >
+      <p className="mb-3 uppercase tracking-[0.28em] text-zinc-600 sm:tracking-[0.35em]">
+        SYSTEM LOG
+      </p>
 
-      <div className="space-y-2">
+      <div className="space-y-2 sm:space-y-3">
         <p>
-          &gt; scanning...
+          <span className="text-zinc-700">&gt;</span> scanning client...
         </p>
 
-        <p>
-          &gt; IP: <span className="text-white">{ip}</span>
+        <p className="flex flex-wrap gap-1">
+          <span className="text-zinc-700">&gt;</span>
+          <span>IP</span>
+          <span className="break-all text-zinc-300">{ip}</span>
         </p>
 
-        <p className="text-zinc-400">
+        <div className="my-3 h-px bg-zinc-800" />
+
+        <motion.p
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 1.2 }}
+          className="break-words text-zinc-400"
+        >
           &gt; Found you lil bro 👉😂
-        </p>
+        </motion.p>
 
-        <p className="text-[11px] text-zinc-600">
-          Pack it up unc
-        </p>
+        <motion.p
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 0.65 }}
+          transition={{ delay: 1.8 }}
+          className="italic text-zinc-600"
+        >
+          Pack it up unc.
+        </motion.p>
       </div>
-    </div>
+    </motion.div>
   );
 }
