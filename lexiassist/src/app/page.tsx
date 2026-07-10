@@ -1,65 +1,192 @@
-import Image from "next/image";
+"use client";
+
+import { motion } from "framer-motion";
+import { useState } from "react";
+
+const initialCards = [
+  {
+    id: 1,
+    title: "CONTRACT.pdf",
+    x: -180,
+    y: -120,
+    rot: -8,
+  },
+  {
+    id: 2,
+    title: "EMAIL.msg",
+    x: 170,
+    y: -100,
+    rot: 6,
+  },
+  {
+    id: 3,
+    title: "EVIDENCE.zip",
+    x: -160,
+    y: 90,
+    rot: 4,
+  },
+  {
+    id: 4,
+    title: "NOTES.txt",
+    x: 160,
+    y: 110,
+    rot: -6,
+  },
+  {
+    id: 5,
+    title: "STATEMENT.doc",
+    x: 0,
+    y: 0,
+    rot: 2,
+  },
+];
 
 export default function Home() {
+  const [moved, setMoved] = useState<number[]>([]);
+
+  const reveal = moved.length === initialCards.length;
+
+  const markMoved = (id: number) => {
+    if (!moved.includes(id)) {
+      setMoved((prev) => [...prev, id]);
+    }
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <main className="relative flex h-screen w-screen overflow-hidden bg-[#0b0b0b] text-zinc-200">
+      {/* Background */}
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,#222_0%,#111_45%,#080808_100%)]" />
+
+      {/* Grain */}
+      <div
+        className="pointer-events-none absolute inset-0 opacity-[0.05]"
+        style={{
+          backgroundImage:
+            "url('https://www.transparenttextures.com/patterns/asfalt-dark.png')",
+        }}
+      />
+
+      {/* Top Left */}
+      <div className="absolute left-10 top-10 z-50">
+        <h1 className="text-4xl font-light tracking-[0.35em]">
+          LEXIASSIST
+        </h1>
+
+        <p className="mt-3 text-sm tracking-[0.2em] uppercase text-zinc-500">
+          AI Legal Advisor
+        </p>
+      </div>
+
+      {/* Bottom Left */}
+      <div className="absolute bottom-10 left-10 text-zinc-500">
+        <p className="text-xs tracking-[0.25em] uppercase">
+          Every case hides something.
+        </p>
+
+        <p className="mt-2 text-sm">
+          Move every file.
+          <br />
+          Find the truth.
+        </p>
+      </div>
+
+      {/* Counter */}
+      <div className="absolute right-10 top-10 text-right text-zinc-500">
+        <p className="text-xs uppercase tracking-[0.3em]">
+          Evidence moved
+        </p>
+
+        <p className="mt-2 text-3xl font-light">
+          {moved.length}/{initialCards.length}
+        </p>
+      </div>
+
+      {/* Truth */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{
+            opacity: reveal ? 1 : 0.08,
+            scale: reveal ? 1 : 0.92,
+          }}
+          transition={{ duration: 1 }}
+          className="text-center"
+        >
+          <h2 className="select-none text-7xl font-thin tracking-[0.6em] text-white">
+            TRUTH
+          </h2>
+
+          <motion.p
+            animate={{
+              opacity: reveal ? 1 : 0,
+              y: reveal ? 0 : 20,
+            }}
+            transition={{ delay: 0.6 }}
+            className="mt-8 text-zinc-400"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+            Every legal story begins by uncovering what was hidden.
+          </motion.p>
+
+          {reveal && (
+            <motion.button
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              whileHover={{
+                scale: 1.05,
+              }}
+              className="mt-10 rounded-full border border-zinc-700 px-8 py-3 text-sm uppercase tracking-[0.3em] transition hover:border-zinc-300 hover:bg-white hover:text-black"
+            >
+              IN DEVELOPMENT NOW
+            </motion.button>
+          )}
+        </motion.div>
+      </div>
+
+      {/* Cards */}
+      {initialCards.map((card) => (
+        <motion.div
+          key={card.id}
+          drag
+          dragMomentum={false}
+          dragElastic={0.12}
+          onDragStart={() => markMoved(card.id)}
+          initial={{
+            x: card.x,
+            y: card.y,
+            rotate: card.rot,
+          }}
+          whileDrag={{
+            scale: 1.06,
+            rotate: 0,
+            cursor: "grabbing",
+            zIndex: 999,
+          }}
+          className="absolute left-1/2 top-1/2 h-44 w-72 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-md border border-zinc-800 bg-[#151515]/90 p-5 backdrop-blur-sm shadow-2xl"
+        >
+          <div className="flex h-full flex-col justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.35em] text-zinc-500">
+                Confidential
+              </p>
+
+              <h3 className="mt-3 text-lg tracking-wide">
+                {card.title}
+              </h3>
+            </div>
+
+            <div className="space-y-2">
+              <div className="h-[1px] w-full bg-zinc-800" />
+              <div className="h-[1px] w-5/6 bg-zinc-800" />
+              <div className="h-[1px] w-4/6 bg-zinc-800" />
+            </div>
+          </div>
+        </motion.div>
+      ))}
+
+      {/* Footer */}
+      <div className="absolute bottom-8 left-1/2 -translate-x-1/2 text-xs tracking-[0.35em] uppercase text-zinc-700">
+        Nothing is ever hidden forever.
+      </div>
+    </main>
   );
 }
