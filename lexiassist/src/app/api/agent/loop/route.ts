@@ -31,49 +31,89 @@ export async function POST(req: Request) {
     // 2. Parse Stateless Payload
     const payload = JSON.parse(rawBody);
     const { sessionId, clientId, messages, currentStep, metadata } = payload;
-    const MAX_STEPS = 5;
-
+    
     // 3. Circuit Breaker Mechanism
+    const MAX_STEPS = 5;
     if (currentStep >= MAX_STEPS) {
       console.warn(`[LOOP] Circuit breaker activated for Session: ${sessionId}`);
       return new Response('Max step safety ceiling hit', { status: 200 });
     }
 
-    // 4. Inject System Prompt (if it's the first step)
-    const trackingMessages = [...messages];
-    if (!trackingMessages.some((m: any) => m.role === 'system')) {
-      trackingMessages.unshift({
-        role: 'system',
-        content: buildLegalAgenticSystemPrompt(),
-      });
-    }
+    // 4. Generate the Immutable System Instruction
+    const systemInstruction = buildLegalAgenticSystemPrompt();
+    const dynamicSystemInstruction = `
+${systemInstruction}
 
-    // 5. Invoke Gemini LLM for single-step reasoning using AI SDK Core
+# ACTIVE RUNTIME CONTEXT
+You must use these exact system values to populate tool parameters when executing actions. Do not ask the user for these values:
+- Current Case Session ID (caseSessionId): "${sessionId}"
+- Client ID (clientId): "${clientId}"
+- Target Litigation Jurisdiction: "${metadata?.jurisdiction || 'Not Specified'}"
+- Target Legal Domain Specialist: "${metadata?.legalDomain || 'Not Specified'}"
+
+# MANDATORY TOOL EXECUTION
+The user has requested a "legal risk assessment". You MUST execute the 'generatePreBriefRisk' tool to fulfill this request. Do not attempt to summarize or assess risks in your final text response without first invoking the 'generatePreBriefRisk' tool to generate the structural data.
+`;
+
+    // 5. Invoke Gemini LLM
     const result = await generateText({
-      model: google("gemini-2.5-pro"),
-      messages: trackingMessages,
+      model: google('gemini-2.5-flash'),
+      system: dynamicSystemInstruction,
+      messages: messages, 
       tools: legalTools,
     });
 
-    // 6. Modern AI SDK Destructuring
-    // Extract the raw generation variables and the standardized response object
-    const { finishReason, toolCalls, text, response } = result;
+    const { finishReason, toolCalls, text } = result;
+    let updatedMessages = [...messages];
 
-    // Append the newly generated assistant messages directly from the response object
-    const updatedMessages = [...messages, ...response.messages];
 
-    // 7. Dynamic URL Resolution
+   // 6. Handle Tool Call State Persistence (Parallel Support)
+    if (toolCalls && toolCalls.length > 0) {
+      const toolCallParts = toolCalls.map((tool: any) => {
+        const toolArgs = tool.args ?? tool.input;
+        if (!toolArgs) {
+          throw new Error(`Tool ${tool.toolName} returned no arguments.`);
+        }
+        return {
+          type: 'tool-call',
+          toolCallId: tool.toolCallId,
+          toolName: tool.toolName,
+          input: toolArgs,
+        };
+      });
+
+      // Persist ALL tool calls in a single assistant message
+      updatedMessages.push({
+        role: 'assistant',
+        content: toolCallParts,
+      });
+    }
+
+    // 7. Hardened Dynamic Host Resolution
     const host = req.headers.get('x-forwarded-host') || req.headers.get('host');
-    const protocol = host && (host.includes('localhost') || host.includes('127.0.0.1')) ? 'http://' : 'https://';
-    const currentAppUrl = host ? `${protocol}${host}` : (process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000');
+    const forwardedProto = req.headers.get('x-forwarded-proto');
+    
+    let protocol = 'https://';
+    if (host && (host.includes('localhost') || host.includes('127.0.0.1'))) {
+      protocol = 'http://';
+    } else if (forwardedProto) {
+      protocol = `${forwardedProto}://`;
+    }
 
-    // 8. The Hybrid Fork: Route using `finishReason`
+    const currentAppUrl = host 
+      ? `${protocol}${host}` 
+      : (process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000');
+
+    // 8. The Routing Fork: Dispatch vs. Stop (Parallel Support)
     if (finishReason === 'tool-calls' || (toolCalls && toolCalls.length > 0)) {
       
-      console.log(`[LOOP] Tool call requested. Dispatching to execute-tool worker.`);
-      
-      // STATE BRANCH A: Action required. Dispatch to secure tool executor.
-      await fetch(`https://qstash.upstash.io/v1/publish/${currentAppUrl}/api/agent/execute-tool`, {
+      const mappedToolCalls = toolCalls.map((tool: any) => ({
+        toolName: tool.toolName,
+        toolCallId: tool.toolCallId,
+        args: tool.args ?? tool.input,
+      }));
+
+      const dispatch = await fetch(`https://qstash.upstash.io/v2/publish/${currentAppUrl}/api/agent/execute-tool`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${process.env.QSTASH_TOKEN}`,
@@ -84,36 +124,40 @@ export async function POST(req: Request) {
           sessionId,
           clientId,
           messages: updatedMessages,
-          toolCall: toolCalls[0], 
+          toolCalls: mappedToolCalls, // Passing the array instead of a single object
           currentStep: currentStep + 1,
           metadata,
         }),
       });
 
+      console.log(`[LOOP] Dispatched ${mappedToolCalls.length} tool calls in batch (Status ${dispatch.status})`);
       return new Response('Transitioning to Action state', { status: 200 });
+      
       
     } else if (finishReason === 'stop') {
       
-      console.log(`[LOOP] Execution complete. Formulating final client response.`);
+      const clientSafeText = text.replace(/<scratchpad>[\s\S]*?<\/scratchpad>/g, '').trim();
+      console.log(`[LOOP] Execution complete. Session: ${sessionId}`);
       
-      // STATE BRANCH B: Conversational Chatbot Reply.
-      // TODO: Save `text` to your database's case history table here.
-
-      // TODO: Broadcast this final reply to the client UI via a real-time channel.
-
-      return new Response('Agent process completed successfully', { status: 200 });
+      return NextResponse.json({
+        status: 'success',
+        sessionId,
+        content: clientSafeText,
+        metadata: {
+          step: currentStep,
+          timestamp: new Date().toISOString()
+        }
+      }, { status: 200 });
       
     } else {
-      
-      console.warn(`[LOOP] Unexpected finishReason: ${finishReason}`);
+      console.warn(`[LOOP] Unexpected finishReason encountered: ${finishReason}`);
       return new Response('Execution interrupted by model constraints', { status: 200 });
-      
     }
 
   } catch (error: any) {
     console.error('[LOOP_ERROR] Core orchestration failure:', error);
     return NextResponse.json(
-      { error: 'Internal loop engine failure', details: error.message },
+      { error: error?.message ?? 'Internal loop engine failure' },
       { status: 500 }
     );
   }

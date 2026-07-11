@@ -3,11 +3,9 @@ import { NextResponse } from 'next/server';
 import { Client } from '@upstash/qstash';
 import { z } from 'zod';
 
-// Initialize QStash Client
-// QSTASH_TOKEN is automatically picked up from your environment variables
 const qstashClient = new Client({ token: process.env.QSTASH_TOKEN! });
 
-// 1. Strict Input Validation Schema (Contract with the Frontend)
+// 1. Strict Input Validation Schema
 const InitRequestSchema = z.object({
   prompt: z.string().min(1, "Prompt cannot be empty"),
   clientId: z.string().uuid("Invalid Client ID"),
@@ -24,7 +22,7 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     
-    // 2. Validate the incoming payload securely
+    // 2. Validate Incoming Payload
     const parsedData = InitRequestSchema.safeParse(body);
     if (!parsedData.success) {
       return NextResponse.json(
@@ -35,14 +33,10 @@ export async function POST(req: Request) {
 
     const { prompt, clientId, fileUrl, hasPdf, metadata } = parsedData.data;
 
-    // 3. Database Insertion (Session Creation)
-    // Here you will eventually use your global DB singleton to create a new case session
-    // const session = await db.caseSession.create({ data: { clientId, status: 'INITIALIZING' } });
-    
-    // Generating a secure mock UUID for the session during this architectural phase
+    // TODO: Replace with actual global DB session creation
     const sessionId = crypto.randomUUID(); 
 
-    // 4. Construct the Standardized Queue Payload
+    // 3. Construct Queue Payload
     const queuePayload = {
       sessionId,
       clientId,
@@ -58,27 +52,31 @@ export async function POST(req: Request) {
       ],
     };
 
- // 1. Check for proxy headers (like ngrok or Vercel) first, then standard host
-const host = req.headers.get('x-forwarded-host') || req.headers.get('host');
+    // 4. Hardened Dynamic Host Resolution
+    const host = req.headers.get('x-forwarded-host') || req.headers.get('host');
+    const forwardedProto = req.headers.get('x-forwarded-proto');
+    
+    let protocol = 'https://';
+    if (host && (host.includes('localhost') || host.includes('127.0.0.1'))) {
+      protocol = 'http://';
+    } else if (forwardedProto) {
+      protocol = `${forwardedProto}://`;
+    }
 
-// 2. Determine protocol based on environment
-const protocol = host && host.includes('localhost') ? 'http://' : 'https://';
+    const currentAppUrl = host 
+      ? `${protocol}${host}` 
+      : (process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000');
 
-// 3. Combine dynamically, but fallback to your .env file if headers are stripped
-const currentAppUrl = host 
-  ? `${protocol}${host}` 
-  : (process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000');
-
-    // 6. The Routing Fork: PDF Pre-Processing vs Standard Loop
+    // 5. Routing Fork: PDF Pre-Processing vs Standard Loop
     if (hasPdf && fileUrl) {
-      console.log(`[INIT] File detected. Dispatching Session ${sessionId} to PDF Parser Worker at ${currentAppUrl}`);
+      console.log(`[INIT] File detected. Dispatching Session ${sessionId} to PDF Parser.`);
       await qstashClient.publishJSON({
         url: `${currentAppUrl}/api/agent/parse-pdf`,
         body: queuePayload,
-        retries: 3, // Exponential backoff if the PDF parser times out
+        retries: 3,
       });
     } else {
-      console.log(`[INIT] Text-only request. Dispatching Session ${sessionId} to Orchestration Loop at ${currentAppUrl}`);
+      console.log(`[INIT] Text-only request. Dispatching Session ${sessionId} to Orchestration Loop.`);
       await qstashClient.publishJSON({
         url: `${currentAppUrl}/api/agent/loop`,
         body: queuePayload,
@@ -86,7 +84,7 @@ const currentAppUrl = host
       });
     }
 
-    // 7. Instantly release the client connection (The 202 Pattern)
+    // 6. Asynchronous 202 Release
     return NextResponse.json(
       { 
         message: 'Legal intake process accepted and queued.', 
@@ -98,7 +96,7 @@ const currentAppUrl = host
   } catch (error: any) {
     console.error('[INIT_ERROR] Failed to initialize agent sequence:', error);
     return NextResponse.json(
-      { error: 'Internal Server Error during intake initialization', details: error.message },
+      { error: 'Internal Server Error during intake initialization', details: error?.message },
       { status: 500 }
     );
   }

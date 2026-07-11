@@ -1,14 +1,15 @@
 // src/app/api/agent/execute-tool/route.ts
 import { NextResponse } from 'next/server';
 import { Receiver } from '@upstash/qstash';
-import { 
-  extractCaseChronologySchema, 
-  generatePreBriefRiskSchema, 
-  generateDocumentRedlinesSchema, 
-  matchVerifyLawyerSchema 
-} from '@/lib/schemas/tools/legal-schemas'
 
-// Import our decoupled tool actions
+import {
+  extractCaseChronologySchema,
+  generatePreBriefRiskSchema,
+  generateDocumentRedlinesSchema,
+  matchVerifyLawyerSchema
+} from '@/lib/schemas/tools/legal-schemas';
+
+// Import decoupled tool actions
 import { executeExtractCaseChronology } from '@/lib/tools/actions/extract-case-chronology';
 import { executeGeneratePreBriefRisk } from '@/lib/tools/actions/generate-pre-brief-risk';
 import { executeGenerateDocumentRedlines } from '@/lib/tools/actions/generate-document-redlines';
@@ -24,7 +25,7 @@ export async function POST(req: Request) {
     // 1. Enforce Cryptographic Signature Verification (Zero-Trust)
     const signature = req.headers.get('upstash-signature');
     const rawBody = await req.text();
-    
+
     const isValid = await receiver.verify({
       signature: signature || '',
       body: rawBody,
@@ -34,88 +35,134 @@ export async function POST(req: Request) {
       return new Response('Unauthorized Webhook Signature', { status: 401 });
     }
 
-    // 2. Destructure the core stateless orchestration payload
-    const { sessionId, clientId, messages, toolCall, currentStep, metadata } = JSON.parse(rawBody);
-    const { toolName, toolCallId, args } = toolCall;
+    // 2. Parse and Validate Payload
+    const payload = JSON.parse(rawBody);
 
-    let toolExecutionResult = {};
+    // Fallback to payload.toolCall for backward compatibility during deployment
+    const activeToolCalls = payload.toolCalls || (payload.toolCall ? [payload.toolCall] : null);
 
-    // 3. Decentralized Execution Router with strict Zod parsing
-    switch (toolName) {
-      case 'extractCaseChronology': {
-        const verifiedArgs = extractCaseChronologySchema.parse(args);
-        toolExecutionResult = await executeExtractCaseChronology(verifiedArgs);
-        break;
-      }
-
-      case 'generatePreBriefRisk': {
-        const verifiedArgs = generatePreBriefRiskSchema.parse(args);
-        toolExecutionResult = await executeGeneratePreBriefRisk(verifiedArgs);
-        break;
-      }
-
-      case 'generateDocumentRedlines': {
-        const verifiedArgs = generateDocumentRedlinesSchema.parse(args);
-        toolExecutionResult = await executeGenerateDocumentRedlines(verifiedArgs);
-        break;
-      }
-
-      case 'matchVerifyLawyer': {
-        const verifiedArgs = matchVerifyLawyerSchema.parse(args);
-        toolExecutionResult = await executeMatchVerifyLawyer(verifiedArgs);
-        break;
-      }
-
-      default:
-        return NextResponse.json({ error: `Unknown tool requested: ${toolName}` }, { status: 400 });
+    if (!activeToolCalls || activeToolCalls.length === 0) {
+      return NextResponse.json(
+        { error: "Missing toolCalls in execute-tool payload" },
+        { status: 400 }
+      );
     }
 
-    // 4. Construct standard AI SDK observation message schema
-    const observationMessage = {
-      role: 'tool',
-      content: [
-        {
-          toolCallId,
-          toolName,
-          result: toolExecutionResult,
+    const { sessionId, clientId, messages, currentStep, metadata } = payload;
+
+    const toolNames = activeToolCalls.map((t: any) => t.toolName).join(', ');
+    console.log(`[EXECUTE-TOOL] Executing Batch: [${toolNames}] | Session: ${sessionId}`);
+
+    // 3. Decentralized Execution Router with Strict Zod Parsing
+    const toolResultContent = [];
+
+    for (const tool of activeToolCalls) {
+      const { toolName, toolCallId, args } = tool;
+      let toolExecutionResult = {};
+
+      try {
+        switch (toolName) {
+          case 'extractCaseChronology':
+            toolExecutionResult = await executeExtractCaseChronology(extractCaseChronologySchema.parse(args));
+            break;
+          case 'generatePreBriefRisk':
+            toolExecutionResult = await executeGeneratePreBriefRisk(generatePreBriefRiskSchema.parse(args));
+            break;
+          case 'generateDocumentRedlines':
+            toolExecutionResult = await executeGenerateDocumentRedlines(generateDocumentRedlinesSchema.parse(args));
+            break;
+          case 'matchVerifyLawyer':
+            toolExecutionResult = await executeMatchVerifyLawyer(matchVerifyLawyerSchema.parse(args));
+            break;
+          default:
+            toolExecutionResult = { error: `Unknown tool requested: ${toolName}` };
+        }
+      } catch (e: any) {
+        console.error(`[EXECUTE-TOOL] Error in ${toolName}:`, e);
+        toolExecutionResult = { error: e.message };
+      }
+
+      // Pack into the required AI SDK discriminator format
+      toolResultContent.push({
+        type: "tool-result",
+        toolCallId,
+        toolName,
+        output: {
+          type: "json",
+          value: toolExecutionResult,
         },
-      ],
-    };
+      });
+    }
 
-    // 5. Dynamic Tunnel & Production Host Resolution
-// 1. Check for proxy headers (like ngrok or Vercel) first, then standard host
-const host = req.headers.get('x-forwarded-host') || req.headers.get('host');
 
-// 2. Determine protocol based on environment
-const protocol = host && host.includes('localhost') ? 'http://' : 'https://';
+    const updatedMessages = [...messages];
 
-// 3. Combine dynamically, but fallback to your .env file if headers are stripped
-const currentAppUrl = host 
-  ? `${protocol}${host}` 
-  : (process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000');
+    // Check if ANY of the tools in this batch were already recorded (prevents QStash retry duplication)
+    const firstToolId = activeToolCalls[0].toolCallId;
+    const alreadyExists = updatedMessages.some((m: any) =>
+      m.role === "tool" &&
+      Array.isArray(m.content) &&
+      m.content.some((c: any) => c.type === "tool-result" && c.toolCallId === firstToolId)
+    );
 
-    // 6. Chain control state machine directly back to the primary orchestration Loop handler
-    await fetch(`https://qstash.upstash.io/v1/publish/${currentAppUrl}/api/agent/loop`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.QSTASH_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        sessionId,
-        clientId,
-        messages: [...messages, observationMessage],
-        currentStep,
-        metadata,
-      }),
+    if (!alreadyExists) {
+      updatedMessages.push({
+        role: "tool",
+        content: toolResultContent
+      });
+    }
+
+    // 6. Dynamic Tunnel & Production Host Resolution
+    const host = req.headers.get('x-forwarded-host') || req.headers.get('host');
+    const forwardedProto = req.headers.get('x-forwarded-proto');
+
+    let protocol = 'https://';
+    if (host && (host.includes('localhost') || host.includes('127.0.0.1'))) {
+      protocol = 'http://';
+    } else if (forwardedProto) {
+      protocol = `${forwardedProto}://`;
+    }
+
+    const currentAppUrl = host
+      ? `${protocol}${host}`
+      : (process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000');
+
+    // 7. Chain State Machine Back to Orchestration Loop
+    const publish = await fetch(
+      `https://qstash.upstash.io/v2/publish/${currentAppUrl}/api/agent/loop`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.QSTASH_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sessionId,
+          clientId,
+          messages: updatedMessages,
+          currentStep,
+          metadata,
+        }),
+      }
+    );
+
+    if (!publish.ok) {
+      const body = await publish.text();
+      throw new Error(`Loop dispatch failed (${publish.status}): ${body}`);
+    }
+
+    console.log(`[EXECUTE-TOOL] Success: State returned to loop (Status ${publish.status})`);
+
+    return NextResponse.json({
+      success: true,
+      tool: toolNames,
+      sessionId,
     });
-
-    return new Response('Observation complete. Chaining back to loop routing brain.', { status: 200 });
 
   } catch (error: any) {
     console.error('[EXECUTE-TOOL ERROR] Asynchronous execution breakdown:', error);
     return NextResponse.json(
-      { error: 'Internal operation failure', details: error.message }, 
+      { error: error?.message ?? 'Internal operation failure' },
       { status: 500 }
     );
   }
