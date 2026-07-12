@@ -77,6 +77,7 @@ model CaseBrief {
   // Relations
   consultations  Consultation[]
   agentSessions  AgentSession[] @relation("CaseSessions")
+  documents       Document[]
 
   // Indexes correctly placed for Case queries
   @@index([clientId])
@@ -116,4 +117,16 @@ model AgentSession {
 
   @@index([clientId])
   @@index([status])
+}
+
+model Document {
+  id            String     @id @default(uuid())
+  caseBriefId   String
+  caseBrief     CaseBrief  @relation(fields: [caseBriefId], references: [id], onDelete: Cascade)
+  fileUrl       String
+  extractedText String     @db.Text
+  redlines      Json?      // populated by generateDocumentRedlines
+  createdAt     DateTime   @default(now())
+
+  @@index([caseBriefId])
 }
