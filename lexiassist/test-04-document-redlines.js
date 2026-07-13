@@ -34,7 +34,7 @@ async function run() {
   const sessionId = await initSession({
     prompt: 'Please review this contract I was asked to sign and flag anything concerning.',
     caseBriefId,
-    fileUrl: CONFIG.TEXT_LAYER_PDF_URL,
+    fileUrl: `${CONFIG.SCANNED_PDF_URL}?t=${Date.now()}`,
     hasPdf: true,
   });
 

@@ -29,7 +29,7 @@ async function run() {
   const sessionId = await initSession({
     prompt: 'I scanned a notice I received from my landlord. Please review it.',
     caseBriefId,
-    fileUrl: CONFIG.SCANNED_PDF_URL,
+    fileUrl: `${CONFIG.SCANNED_PDF_URL}?t=${Date.now()}`,
     hasPdf: true,
   });
 

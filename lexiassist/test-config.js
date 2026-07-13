@@ -6,7 +6,7 @@ export const CONFIG = {
   BASE_URL: 'https://prosubscription-nonprolifically-jimmie.ngrok-free.dev',
 
   // Any valid UUID — represents the test client
-  CLIENT_ID: '98ef1627-d4a5-40ec-8dc8-cfdb57c894e2',
+  CLIENT_ID: '7e4c2e1f-8714-4619-8192-2f491753b5f3',
 
   // ---- FILE URLS ----
   // Upload two test PDFs through your actual UploadThing flow first
@@ -21,8 +21,8 @@ export const CONFIG = {
   // printed page on your phone, then "Print to PDF" the photo, OR scan
   // a real document with a scanner app (many phone scanner apps export
   // image-only PDFs by default). This exercises the Gemini vision fallback.
-  TEXT_LAYER_PDF_URL: 'https://utfs.io/f/8KNDHE3O04CNToIRObZ2KAnVvaif03dIk8gr5h6GqO9uPCWU',
-  SCANNED_PDF_URL: 'https://utfs.io/f/8KNDHE3O04CNLmAV2ket3oNf5m1xTZwBynUGAVizdSc8qlOR',
+  TEXT_LAYER_PDF_URL: 'https://utfs.io/f/8KNDHE3O04CNW4WoBfRvAktbZiQaF0Y1cyjodx39elUnuHzq',
+  SCANNED_PDF_URL: 'https://utfs.io/f/8KNDHE3O04CNzmN8BvQJLu96FamTQ4cBDAXNfHJi8O0MYgVb',
 };
 
 // ---- Shared helpers ----

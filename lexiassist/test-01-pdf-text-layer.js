@@ -27,7 +27,7 @@ async function run() {
   const sessionId = await initSession({
     prompt: 'Here is a copy of my lease agreement. Please review it as part of my case.',
     caseBriefId,
-    fileUrl: CONFIG.TEXT_LAYER_PDF_URL,
+    fileUrl: `${CONFIG.SCANNED_PDF_URL}?t=${Date.now()}`,
     hasPdf: true,
   });
 
