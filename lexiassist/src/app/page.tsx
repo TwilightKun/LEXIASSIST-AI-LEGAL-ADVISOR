@@ -1,6 +1,6 @@
 "use client";
+
 import Link from "next/link";
-import { signIn } from "next-auth/react";
 import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
 import IpBox from "./ip";
@@ -149,13 +149,13 @@ export default function Home() {
                 ENTER INTAKE PORTAL
               </Link>
               
-              {/* Lawyer Route - NextAuth SPA Trigger */}
-              <button
-                onClick={() => signIn(undefined, { callbackUrl: "/dashboard" })}
+              {/* Lawyer Route - Next.js SPA Link */}
+              <Link
+                href="/login"
                 className="text-[10px] uppercase tracking-widest text-zinc-600 hover:text-emerald-500 transition-colors"
               >
-                Attorney Access
-              </button>
+                ATTORNEY ACCESS
+              </Link>
             </motion.div>
           )}
         </motion.div>
