@@ -1,20 +1,25 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { UploadDropzone } from "@/utils/uploadthing";
 import { motion } from "framer-motion";
-import { useTransition, useState } from "react";
-import { saveDocumentRecord } from "@/app/actions/document";
+import { useTransition, useState, Suspense } from "react";
+import { dispatchPdfToAgent } from "@/app/actions/document";
 
-export default function UploadModal() {
+function ModalContent() {
   const router = useRouter();
   
-  //useTransition for Optimistic UI
+  // 1. Grab the URL parameters to get the active case ID
+  const searchParams = useSearchParams();
+  const activeCaseId = searchParams.get("caseId") || "test-case-id";
+  
+  // 2. useTransition for Optimistic UI
   const [isPending, startTransition] = useTransition();
   const [isSuccess, setIsSuccess] = useState(false);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      {/* Click outside to close */}
       <div className="absolute inset-0" onClick={() => router.back()} />
       
       <motion.div 
@@ -47,15 +52,13 @@ export default function UploadModal() {
             onClientUploadComplete={(res) => {
               const uploadedUrl = res[0].url;
               
-              // Trigger the Server Action in the background without freezing the UI
               startTransition(async () => {
-                // IMPORTANT: We are passing a hardcoded ID for testing. 
-                // You will eventually pass the real active case ID here.
-                const dbResult = await saveDocumentRecord(uploadedUrl, "test-case-id");
+                const dbResult = await dispatchPdfToAgent(uploadedUrl, activeCaseId);
                 
                 if (dbResult.success) {
                   setIsSuccess(true);
-                  // Wait 1 second so the user can see the success state, then close modal
+                  // Refresh the router so the dashboard updates, then close modal
+                  router.refresh();
                   setTimeout(() => router.back(), 1000); 
                 } else {
                   alert("Upload succeeded, but database save failed.");
@@ -73,5 +76,14 @@ export default function UploadModal() {
         </div>
       </motion.div>
     </div>
+  );
+}
+
+// Wrap in Suspense to prevent Next.js build errors when using useSearchParams
+export default function UploadModal() {
+  return (
+    <Suspense fallback={null}>
+      <ModalContent />
+    </Suspense>
   );
 }

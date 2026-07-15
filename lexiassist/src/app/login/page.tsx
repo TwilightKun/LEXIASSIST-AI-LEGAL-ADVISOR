@@ -28,16 +28,11 @@ export default function LoginPage() {
         setError("Invalid email or password. Access denied.");
         setIsLoading(false);
       } else {
-        // 1. Fetch the active session to see WHO just logged in
-        const session = await getSession();
+        await getSession();
         
-        // 2. Check the role and route them to the correct app zone
-        if (session?.user?.role === "LAWYER") {
-          router.push("/dashboard");
-        } else {
-          router.push("/client");
-        }
-        
+        // Unify routing: Everyone lands at the dashboard.
+        // layout.tsx will detect the role and swap the UI accordingly.
+        router.push("/dashboard");
         router.refresh(); 
       }
     } catch (err) {

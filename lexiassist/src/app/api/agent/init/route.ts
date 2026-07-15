@@ -7,18 +7,20 @@ import { getBaseUrl } from "@/lib/tools/actions/getBaseurl"
 
 const qstashClient = new Client({ token: process.env.QSTASH_TOKEN! });
 
-// 1. Strict Input Validation Schema
+// 1. Dev-Relaxed Input Validation Schema
 const InitRequestSchema = z.object({
   prompt: z.string().min(1, "Prompt cannot be empty"),
-  clientId: z.string().uuid("Invalid Client ID"),
-  sessionId: z.string().uuid("Invalid Session ID").optional(), // Pass this to continue a chat
-  caseBriefId: z.string().uuid("Invalid Case Brief ID"),
+  clientId: z.string().min(1, "Invalid Client ID"),
+  sessionId: z.string().optional(), 
+  caseBriefId: z.string().min(1, "Invalid Case Brief ID"),
   fileUrl: z.string().url("Invalid File URL").optional(),
   hasPdf: z.boolean().default(false),
+  
   metadata: z.object({
     jurisdiction: z.string().optional(),
     legalDomain: z.string().optional(),
     estimatedBudget: z.number().optional(),
+    isSystemInjection: z.boolean().optional(), //Prevents Zod from deleting your frontend flag
   }).default({}),
 });
 
@@ -37,12 +39,17 @@ export async function POST(req: Request) {
 
     const { prompt, clientId, sessionId: incomingSessionId, fileUrl, hasPdf, metadata } = parsedData.data;
 
-    // 3. Format the new user message
+    // Extract fileUrl from the prompt if it wasn't passed directly in the JSON root
+    let actualFileUrl = fileUrl;
+    if (hasPdf && !actualFileUrl) {
+      const urlMatch = prompt.match(/\[Attached File URL: (.+?)\]/);
+      actualFileUrl = urlMatch?.[1];
+    }
+
+    // Just use the prompt directly, because frontend already appended the URL cleanly
     const newUserMessage = {
       role: 'user',
-      content: hasPdf && fileUrl
-        ? `${prompt}\n\n[Attached File URL: ${fileUrl}]`
-        : prompt,
+      content: prompt,
     };
 
     let activeSessionId = incomingSessionId;
@@ -50,7 +57,6 @@ export async function POST(req: Request) {
 
     // 4. State Rehydration & DB Operations
     if (activeSessionId) {
-      // CONTINUATION: Fetch existing session and append
       const existingSession = await prisma.agentSession.findUnique({
         where: { id: activeSessionId },
       });
@@ -66,28 +72,23 @@ export async function POST(req: Request) {
         );
       }
 
-      // Parse existing messages (default to empty array if null)
       messagesHistory = existingSession.messages
         ? (existingSession.messages as any[])
         : [];
 
       messagesHistory.push(newUserMessage);
 
-      // Lock the session back to PROCESSING mode
       await prisma.agentSession.update({
         where: { id: activeSessionId },
         data: {
           status: 'PROCESSING',
-          messages: messagesHistory, // Update DB before network dispatch
+          messages: messagesHistory, 
         }
       });
 
     } else {
-      // NEW SESSION: Create record with the first message
       messagesHistory = [newUserMessage];
 
-      // If caseBriefId was supplied, verify it actually belongs to this client
-      // before linking — never trust a client-supplied ID blindly.
       if (parsedData.data.caseBriefId) {
         const brief = await prisma.caseBrief.findUnique({ where: { id: parsedData.data.caseBriefId } });
         if (!brief || brief.clientId !== clientId) {
@@ -113,14 +114,17 @@ export async function POST(req: Request) {
       clientId,
       currentStep: 0,
       metadata,
-      messages: messagesHistory, // Full context passed to Gemini
+      messages: messagesHistory, 
     };
 
-    // 6. Hardened Dynamic Host Resolution
-    const currentAppUrl = getBaseUrl(req);
+    //  Ngrok tunnel override for local development routing
+    const isDevelopment = process.env.NODE_ENV === 'development';
+    const currentAppUrl = isDevelopment 
+      ? 'https://gender-partly-cash.ngrok-free.dev'
+      : getBaseUrl(req);
 
-    // 7. Routing Fork: PDF Pre-Processing vs Standard Loop
-    if (hasPdf && fileUrl) {
+    // Use the actualFileUrl we extracted to trigger the routing fork correctly
+    if (hasPdf && actualFileUrl) {
       console.log(`[INIT] File detected. Dispatching Session ${activeSessionId} to PDF Parser.`);
       await qstashClient.publishJSON({
         url: `${currentAppUrl}/api/agent/parse-pdf`,

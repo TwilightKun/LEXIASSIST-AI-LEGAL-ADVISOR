@@ -143,7 +143,7 @@ export default function Home() {
             >
               {/* Client Route - Standard Link */}
               <Link
-                href="/client"
+                href="/login"
                 className="inline-block rounded-full border border-zinc-700 px-6 py-3 text-xs uppercase tracking-[0.25em] transition hover:border-zinc-300 hover:bg-white hover:text-black sm:px-8 sm:text-sm"
               >
                 ENTER INTAKE PORTAL

@@ -1,10 +1,13 @@
 // src/app/dashboard/ClientDashboard.tsx
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect } from "react";
 import { createNewCase } from "@/lib/tools/actions/case";
+import { getCaseDetails } from "@/app/actions/getCaseData";
+import ChatInterface from "./ChatInterface";
+import RedlineViewer from "./RedlineViewer";
+import ChronologyViewer from "./ChronologyViewer";
 
-// Define the shape of our case data
 type CaseBrief = {
   id: string;
   title: string;
@@ -18,9 +21,38 @@ export default function ClientDashboard({ initialCases }: { initialCases: CaseBr
   const [cases, setCases] = useState<CaseBrief[]>(initialCases);
   const [error, setError] = useState<string | null>(null);
   
+  // Live data states for Tab 4 (Chronology)
+  const [caseData, setCaseData] = useState({
+    aiTimeline: [] as any[],
+    redlines: [] as any[],
+    fileUrl: "",
+    documentName: "",
+  });
+  const [isFetchingData, setIsFetchingData] = useState(false);
+  
   const [isPending, startTransition] = useTransition();
 
-  // Handle Tab Switching with Lock Logic
+  // Fetch live data whenever a case is selected OR the user clicks the Data Visualization tabs
+  useEffect(() => {
+    if (!selectedCaseId) return;
+
+    if (activeTab === 3 || activeTab === 4) {
+      const fetchLiveData = async () => {
+        setIsFetchingData(true);
+        const result = await getCaseDetails(selectedCaseId);
+        
+        if (result.success && result.data) {
+          setCaseData(result.data);
+        } else {
+          console.error("Failed to fetch live case data:", result.error);
+        }
+        setIsFetchingData(false);
+      };
+
+      fetchLiveData();
+    }
+  }, [selectedCaseId, activeTab]);
+
   const handleTabClick = (tabIndex: number) => {
     if (tabIndex > 1 && !selectedCaseId) {
       setError("You must create or select a case before accessing this tab.");
@@ -30,7 +62,6 @@ export default function ClientDashboard({ initialCases }: { initialCases: CaseBr
     setActiveTab(tabIndex);
   };
 
-  // Handle New Case Creation
   const handleCreateCase = () => {
     setError(null);
     startTransition(async () => {
@@ -39,7 +70,7 @@ export default function ClientDashboard({ initialCases }: { initialCases: CaseBr
       if (result.success && result.caseBrief) {
         setCases([result.caseBrief as CaseBrief, ...cases]);
         setSelectedCaseId(result.caseId);
-        setActiveTab(2); // Instantly teleport the user to the Chat tab
+        setActiveTab(2);
       } else {
         setError(result.error || "System error during case initialization.");
       }
@@ -87,9 +118,20 @@ export default function ClientDashboard({ initialCases }: { initialCases: CaseBr
           </div>
         )}
 
-        {/* TAB 1: MAIN DASHBOARD (Case Initialization) */}
-        {activeTab === 1 && (
-          <div className="space-y-6 animate-in fade-in duration-300">
+        {/* DATA FETCHING INDICATOR */}
+        {isFetchingData && activeTab > 2 && (
+          <div className="text-[10px] font-mono text-emerald-500 animate-pulse uppercase tracking-widest">
+            // Synchronizing with secure database vault...
+          </div>
+        )}
+
+        {/* ================================================================= */}
+        {/* TAB WORKSPACES (Using CSS Display Toggles for Memory Persistence) */}
+        {/* ================================================================= */}
+
+        {/* TAB 1: MAIN DASHBOARD */}
+        <div className={activeTab === 1 ? "block animate-in fade-in duration-300" : "hidden"}>
+          <div className="space-y-6">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-light text-white">Active Case Files</h2>
@@ -143,27 +185,31 @@ export default function ClientDashboard({ initialCases }: { initialCases: CaseBr
               )}
             </div>
           </div>
-        )}
+        </div>
 
-        {/* TAB 2: AI CHAT (Placeholder for Phase 3) */}
-        {activeTab === 2 && (
-          <div className="animate-in fade-in duration-300 border border-zinc-800/60 bg-[#0c0c0e]/80 rounded-2xl h-150 flex items-center justify-center">
-            <p className="text-zinc-500 font-mono text-sm">AI Chat Interface goes here for Case ID: {selectedCaseId}</p>
-          </div>
-        )}
+        {/* ONLY mount these components if a case is selected, but keep them alive in the background using 'hidden' */}
+        {selectedCaseId && (
+          <>
+            {/* TAB 2: AI CHAT */}
+            <div className={activeTab === 2 ? "block animate-in fade-in duration-300" : "hidden"}>
+              <ChatInterface 
+                activeCaseId={selectedCaseId} 
+                cases={cases}
+                onSwitchCase={(newCaseId) => setSelectedCaseId(newCaseId)} 
+              />
+            </div>
 
-        {/* TAB 3: REDLINES (Placeholder for Phase 4) */}
-        {activeTab === 3 && (
-          <div className="animate-in fade-in duration-300 border border-zinc-800/60 bg-[#0c0c0e]/80 rounded-2xl h-150 flex items-center justify-center">
-            <p className="text-zinc-500 font-mono text-sm">Document Redlines Split-Screen goes here.</p>
-          </div>
-        )}
+            {/* TAB 3: REDLINES */}
+            <div className={activeTab === 3 ? "block animate-in fade-in duration-300" : "hidden"}>
+              {/*  Passing isActive tells the component when to re-query the database */}
+              <RedlineViewer activeCaseId={selectedCaseId} isActive={activeTab === 3} />
+            </div>
 
-        {/* TAB 4: CHRONOLOGY (Placeholder for Phase 4) */}
-        {activeTab === 4 && (
-          <div className="animate-in fade-in duration-300 border border-zinc-800/60 bg-[#0c0c0e]/80 rounded-2xl h-150 flex items-center justify-center">
-            <p className="text-zinc-500 font-mono text-sm">Timeline Visualizer goes here.</p>
-          </div>
+            {/* TAB 4: CHRONOLOGY */}
+            <div className={activeTab === 4 ? "block animate-in fade-in duration-300" : "hidden"}>
+              <ChronologyViewer events={caseData.aiTimeline} />
+            </div>
+          </>
         )}
 
       </div>

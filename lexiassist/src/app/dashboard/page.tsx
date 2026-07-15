@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth.config";
 import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
-import ClientDashboard from "@/app/dashboard/ClietDashboard";
+import ClientDashboard from "@/app/dashboard/ClientDashboard";
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions);
@@ -24,7 +24,7 @@ export default async function DashboardPage() {
     );
   }
 
-  // Fetch all existing cases for the CLIENT
+  // 2. If Client, fetch cases and return strictly the ClientDashboard
   const existingCases = await prisma.caseBrief.findMany({
     where: { clientId: userId },
     orderBy: { createdAt: "desc" },

@@ -83,7 +83,7 @@ export const matchVerifyLawyerSchema = z.object({
   jurisdiction: z.string().min(2).describe(
     'The explicit legal jurisdiction where the dispute must be litigated (e.g., "Delhi", "Maharashtra").'
   ),
-  legalDomain: z.enum(['Criminal', 'Corporate', 'Property', 'Family', 'Employment']).describe(
+  legalDomain: z.enum(['Criminal Law', 'Corporate Law', 'Property Law', 'Family Law', 'Employment Law']).describe(
     'The absolute legal specialization required for the dispute.'
   ),
   budgetLimitBracket: z.number().int().positive().describe(

@@ -5,8 +5,9 @@ import { extractText, getDocumentProxy } from 'unpdf';
 import { generateText } from 'ai';
 import { google } from '@ai-sdk/google';
 import { z } from 'zod';
-import { prisma } from '@/lib/prisma'; // Using your established DB singleton
+import { prisma } from '@/lib/prisma';
 import { getBaseUrl } from '@/lib/tools/actions/getBaseurl';
+import { pusher } from "@/lib/pusher/server";
 
 const receiver = new Receiver({
   currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY!,
@@ -15,11 +16,12 @@ const receiver = new Receiver({
 
 const qstashClient = new Client({ token: process.env.QSTASH_TOKEN! });
 
+//  Relaxed the UUID constraints to match the init route, preventing 400 Bad Requests
 const ParsePdfPayloadSchema = z.object({
-  sessionId: z.string().uuid(),
-  clientId: z.string().uuid(),
+  sessionId: z.string().min(1, "Invalid Session ID"),
+  clientId: z.string().min(1, "Invalid Client ID"),
   currentStep: z.number().int(),
-  metadata: z.record(z.string(),z.any()),
+  metadata: z.any().optional().default({}),
   messages: z.array(z.any()), 
 });
 
@@ -34,12 +36,23 @@ export async function POST(req: Request) {
   try {
     const signature = req.headers.get('upstash-signature');
     const rawBody = await req.text();
-    const isValid = await receiver.verify({ signature: signature || '', body: rawBody }).catch(() => false);
-    if (!isValid) return new Response('Unauthorized Webhook Signature', { status: 401 });
+    
+    // SECURITY OVERRIDE (INBOUND)
+    const isDevelopment = process.env.NODE_ENV === 'development';
+    const isValid = isDevelopment 
+      ? true 
+      : await receiver.verify({ signature: signature || '', body: rawBody }).catch(() => false);
+    
+    if (!isValid) {
+      console.warn('[PARSE-PDF] Unauthorized Webhook Signature attempt blocked.');
+      return new Response('Unauthorized Webhook Signature', { status: 401 });
+    }
 
     const payload = JSON.parse(rawBody);
     const parsed = ParsePdfPayloadSchema.safeParse(payload);
+    
     if (!parsed.success) {
+      console.error('[PARSE-PDF] Payload Validation Failed:', parsed.error.format());
       return NextResponse.json({ error: 'Invalid parse-pdf payload', details: parsed.error.format() }, { status: 400 });
     }
 
@@ -54,7 +67,7 @@ export async function POST(req: Request) {
       throw new Error('No file URL found in message history — parse-pdf was dispatched without an attachment.');
     }
 
-    // SECURITY: Validate both legacy and modern UploadThing domains
+    // Validate both legacy and modern UploadThing domains
     const allowedHosts = ['utfs.io', '.ufs.sh'];
     const parsedUrl = new URL(fileUrl);
     const isTrustedHost = allowedHosts.some(host => 
@@ -74,22 +87,21 @@ export async function POST(req: Request) {
     }
 
     const arrayBuffer = await fileRes.arrayBuffer();
-    // NEW: Immediately clone it into a Node Buffer before unpdf touches it
     const pdfBuffer = Buffer.from(arrayBuffer);
 
-    // 6. Try native text-layer extraction first
+    //  Try native text-layer extraction first
     let extractedText = '';
     let extractionMethod: 'text-layer' | 'vision-ocr' = 'text-layer';
 
     try {
       const pdf = await getDocumentProxy(new Uint8Array(pdfBuffer));
       const { text } = await extractText(pdf, { mergePages: true });
-      extractedText = text.replace(/\s+/g, ' ').trim(); // Normalize whitespace
+      extractedText = text.replace(/\s+/g, ' ').trim(); 
     } catch {
       extractedText = ''; 
     }
 
-    // 7. Vision OCR Fallback
+    // Vision OCR Fallback
     if (extractedText.length < 50) {
       console.log(`[PARSE-PDF] Text layer insufficient (${extractedText.length} chars) — falling back to vision OCR.`);
       extractionMethod = 'vision-ocr';
@@ -115,13 +127,13 @@ export async function POST(req: Request) {
       throw new Error('Document contained no extractable text via text-layer parsing or vision OCR — likely blank, corrupted, or entirely illegible.');
     }
 
-  // 8. Truncate defensively
+    // Truncate defensively
     const truncated = extractedText.length > MAX_EXTRACTED_CHARS;
     const finalText = truncated
       ? extractedText.slice(0, MAX_EXTRACTED_CHARS) + '\n\n[TRUNCATED — document exceeded processing limit]'
       : extractedText;
 
-    // --- NEW LOGIC: Eager Document Creation ---
+    // Eager Document Creation
     const session = await prisma.agentSession.findUnique({
       where: { id: sessionId },
       select: { caseBriefId: true },
@@ -149,15 +161,13 @@ export async function POST(req: Request) {
       },
     });
     
-   
-    
     const documentId = doc.id;
     // ------------------------------------------
 
     // 9. Inject as a new message with the dynamic documentId explicitly mapped
     const documentMessage = {
       role: 'user',
-      content: `[DOCUMENT CONTENT extracted from uploaded PDF via ${extractionMethod === 'vision-ocr' ? 'AI vision transcription (scanned document — may contain transcription errors)' : 'native text layer'}, documentId: ${documentId}:]\n\n${finalText}`,
+      content: `[DOCUMENT CONTENT extracted from uploaded PDF via ${extractionMethod === 'vision-ocr' ? 'AI vision transcription' : 'native text layer'}, documentId: ${documentId}:]\n\n${finalText}`,
     };
 
     const updatedMessages = [...messages, documentMessage];
@@ -167,7 +177,11 @@ export async function POST(req: Request) {
       data: { messages: updatedMessages },
     });
 
-    const currentAppUrl = getBaseUrl(req);
+    // SECURITY OVERRIDE (OUTBOUND)
+    const currentAppUrl = isDevelopment 
+      ? 'https://gender-partly-cash.ngrok-free.dev'
+      : getBaseUrl(req);
+
     await qstashClient.publishJSON({
       url: `${currentAppUrl}/api/agent/loop`,
       body: { sessionId, clientId, messages: updatedMessages, currentStep, metadata },
@@ -181,6 +195,11 @@ export async function POST(req: Request) {
     console.error('[PARSE-PDF ERROR]:', error);
 
     if (activeSessionId) {
+      await pusher.trigger(`session-${activeSessionId}`, 'agent:completed', {
+        status: 'FAILED',
+        error: error?.message || 'PDF processing failed.',
+      }).catch((e) => console.error('[PARSE-PDF] Failed to trigger Pusher:', e));
+
       await prisma.agentSession.update({
         where: { id: activeSessionId },
         data: { status: 'FAILED', content: `Document processing failed: ${error.message}` },

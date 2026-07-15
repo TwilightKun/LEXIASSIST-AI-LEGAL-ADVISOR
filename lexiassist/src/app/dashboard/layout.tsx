@@ -1,6 +1,9 @@
+// src/app/dashboard/layout.tsx
 import { ReactNode } from "react";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth.config";
 
-export default function DashboardLayout({
+export default async function DashboardLayout({
   children,
   caselist,
   analytics,
@@ -9,6 +12,16 @@ export default function DashboardLayout({
   caselist: ReactNode;
   analytics: ReactNode;
 }) {
+  const session = await getServerSession(authOptions);
+  const userRole = (session?.user as any)?.role;
+
+  // 1. CLIENT VIEW: Return a clean slate. 
+  // The ClientDashboard SPA component handles its own full-screen layout.
+  if (userRole !== "LAWYER") {
+    return <>{children}</>;
+  }
+
+  // 2. LAWYER VIEW: Return the Attorney Portal with Parallel Routes
   return (
     <div className="flex min-h-screen bg-[#08080a] text-zinc-200">
       {/* Sidebar (Placeholder for now) */}
