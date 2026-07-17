@@ -1,3 +1,4 @@
+//src/proxy.ts
 import { withAuth } from "next-auth/middleware";
 
 // Explicitly define and export the middleware function
