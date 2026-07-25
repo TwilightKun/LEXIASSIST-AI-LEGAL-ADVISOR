@@ -1,6 +1,9 @@
+// src/lib/auth.config.ts
 import { NextAuthOptions, DefaultSession } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
+import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
+import { loginAttemptLimiter } from "@/lib/rate-limit";
 
 // TYPESCRIPT AUGMENTATION
 declare module "next-auth" {
@@ -37,30 +40,43 @@ export const authOptions: NextAuthOptions = {
           return null;
         }
 
+        const normalizedEmail = credentials.email.toLowerCase().trim();
+
+        // Throttle login attempts to prevent brute-forcing
+        // This caps attempts at 10 per 15 minutes per submitted email.
+        const limitResult = await loginAttemptLimiter.limit(normalizedEmail);
+        if (!limitResult.success) {
+          throw new Error("Too many login attempts. Please wait a few minutes and try again.");
+        }
+
         const user = await prisma.user.findUnique({
-          where: { email: credentials.email }
+          where: { email: normalizedEmail }
         });
 
-        // Robust check: Ensure user exists and the password field is populated
-        // Note: Post-deployment, ensure passwords are hashed (e.g., bcrypt)
-        if (user && user.password && user.password === credentials.password) {
-          return { 
-            id: user.id, 
-            name: user.name, 
-            email: user.email, 
-            role: user.role 
-          };
+        // Fail safely and generically
+        if (!user || !user.password) {
+          return null;
         }
-        
-        return null;
+
+        const passwordMatches = await bcrypt.compare(credentials.password, user.password);
+        if (!passwordMatches) {
+          return null;
+        }
+
+        return {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role
+        };
       }
     })
   ],
-  session: { 
+  session: {
     strategy: "jwt",
     maxAge: 24 * 60 * 60, // 24-hour strict session limit
   },
-  secret: process.env.NEXTAUTH_SECRET, 
+  secret: process.env.NEXTAUTH_SECRET,
   pages: {
     signIn: "/", // Routes unauthorized access back to root landing page
   },
@@ -75,8 +91,8 @@ export const authOptions: NextAuthOptions = {
     },
     async session({ session, token }) {
       if (token && session.user) {
-        session.user.role = token.role;
-        session.user.id = token.id || (token.sub as string); // fallback
+        session.user.role = token.role as string;
+        session.user.id = (token.id || token.sub) as string; // fallback
       }
       return session;
     }
