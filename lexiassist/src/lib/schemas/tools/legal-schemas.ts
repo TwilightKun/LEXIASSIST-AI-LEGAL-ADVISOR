@@ -2,6 +2,16 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 
+// 1. Export LEGAL_DOMAINS as a constant so it can be shared with the API route boundary
+// This prevents prompt injection by keeping a strict, single source of truth.
+export const LEGAL_DOMAINS = [
+  'Criminal Law',
+  'Corporate Law',
+  'Property Law',
+  'Family Law',
+  'Employment Law',
+  'Banking Law',
+] as const;
 
 // Stored shape in CaseBrief.aiTimeline — NOT the tool's input schema.
 // `verified` is computed server-side in executeExtractCaseChronology, never
@@ -83,7 +93,8 @@ export const matchVerifyLawyerSchema = z.object({
   jurisdiction: z.string().min(2).describe(
     'The explicit legal jurisdiction where the dispute must be litigated (e.g., "Delhi", "Maharashtra").'
   ),
-  legalDomain: z.enum(['Criminal Law', 'Corporate Law', 'Property Law', 'Family Law', 'Employment Law', 'Banking Law']).describe(
+  // 2. Use the shared constant here for strict routing
+  legalDomain: z.enum(LEGAL_DOMAINS).describe(
     'The absolute legal specialization required for the dispute.'
   ),
   budgetLimitBracket: z.number().int().positive().describe(

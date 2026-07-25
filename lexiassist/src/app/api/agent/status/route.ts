@@ -1,6 +1,7 @@
 // src/app/api/agent/status/route.ts
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { requireSessionAccess } from '@/lib/auth-helpers';
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -9,6 +10,10 @@ export async function GET(req: Request) {
   if (!sessionId) {
     return NextResponse.json({ error: 'Session ID required' }, { status: 400 });
   }
+
+  // SECURITY FIX: Prevent unauthorized access to the session status
+  const auth = await requireSessionAccess(sessionId);
+  if (!auth.ok) return auth.response;
 
   try {
     const session = await prisma.agentSession.findUnique({

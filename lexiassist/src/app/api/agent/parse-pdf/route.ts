@@ -5,8 +5,9 @@ import { extractText, getDocumentProxy } from 'unpdf';
 import { generateText } from 'ai';
 import { google } from '@ai-sdk/google';
 import { z } from 'zod';
-import { prisma } from '@/lib/prisma'; // Using your established DB singleton
+import { prisma } from '@/lib/prisma';
 import { getBaseUrl } from '@/lib/tools/actions/getBaseurl';
+import { reportError } from '@/lib/error-reporting';
 
 const receiver = new Receiver({
   currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY!,
@@ -25,6 +26,7 @@ const ParsePdfPayloadSchema = z.object({
 
 const MAX_PDF_BYTES = 15 * 1024 * 1024; // 15MB
 const MAX_EXTRACTED_CHARS = 100_000; 
+const FETCH_TIMEOUT_MS = 20_000; // RELIABILITY FIX: 20s timeout on fetch
 
 export const maxDuration = 60;
 
@@ -65,7 +67,20 @@ export async function POST(req: Request) {
       throw new Error(`Rejected file URL from untrusted host: ${parsedUrl.hostname}`);
     }
 
-    const fileRes = await fetch(fileUrl);
+    // RELIABILITY FIX: Wrap the fetch in an AbortController so it doesn't hang the function
+    const fetchController = new AbortController();
+    const fetchTimeout = setTimeout(() => fetchController.abort(), FETCH_TIMEOUT_MS);
+    let fileRes: Response;
+    try {
+      fileRes = await fetch(fileUrl, { signal: fetchController.signal });
+    } catch (e: any) {
+      if (e.name === 'AbortError') {
+        throw new Error(`Timed out fetching PDF from storage after ${FETCH_TIMEOUT_MS / 1000}s.`);
+      }
+      throw e;
+    } finally {
+      clearTimeout(fetchTimeout);
+    }
     if (!fileRes.ok) throw new Error(`Failed to fetch PDF from storage: ${fileRes.status}`);
 
     const contentLength = Number(fileRes.headers.get('content-length') ?? 0);
@@ -74,22 +89,19 @@ export async function POST(req: Request) {
     }
 
     const arrayBuffer = await fileRes.arrayBuffer();
-    // NEW: Immediately clone it into a Node Buffer before unpdf touches it
     const pdfBuffer = Buffer.from(arrayBuffer);
 
-    // 6. Try native text-layer extraction first
     let extractedText = '';
     let extractionMethod: 'text-layer' | 'vision-ocr' = 'text-layer';
 
     try {
       const pdf = await getDocumentProxy(new Uint8Array(pdfBuffer));
       const { text } = await extractText(pdf, { mergePages: true });
-      extractedText = text.replace(/\s+/g, ' ').trim(); // Normalize whitespace
+      extractedText = text.replace(/\s+/g, ' ').trim(); 
     } catch {
       extractedText = ''; 
     }
 
-    // 7. Vision OCR Fallback
     if (extractedText.length < 50) {
       console.log(`[PARSE-PDF] Text layer insufficient (${extractedText.length} chars) — falling back to vision OCR.`);
       extractionMethod = 'vision-ocr';
@@ -115,33 +127,23 @@ export async function POST(req: Request) {
       throw new Error('Document contained no extractable text via text-layer parsing or vision OCR — likely blank, corrupted, or entirely illegible.');
     }
 
-  // 8. Truncate defensively
     const truncated = extractedText.length > MAX_EXTRACTED_CHARS;
     const finalText = truncated
       ? extractedText.slice(0, MAX_EXTRACTED_CHARS) + '\n\n[TRUNCATED — document exceeded processing limit]'
       : extractedText;
 
-    // --- NEW LOGIC: Eager Document Creation ---
     const session = await prisma.agentSession.findUnique({
       where: { id: sessionId },
       select: { caseBriefId: true },
     });
 
-    if (!session) {
-      throw new Error(`AgentSession ${sessionId} not found during PDF processing.`);
-    }
-
-    if (!session.caseBriefId) {
-      throw new Error(`AgentSession ${sessionId} has no caseBriefId — strict eager case creation failed upstream.`);
+    if (!session || !session.caseBriefId) {
+      throw new Error(`AgentSession ${sessionId} not found or missing caseBriefId.`);
     }
 
     const doc = await prisma.document.upsert({
-      where: { 
-        fileUrl: fileUrl 
-      },
-      update: { 
-        extractedText: finalText 
-      },
+      where: { fileUrl: fileUrl },
+      update: { extractedText: finalText },
       create: {
         caseBriefId: session.caseBriefId,
         fileUrl: fileUrl,
@@ -149,12 +151,8 @@ export async function POST(req: Request) {
       },
     });
     
-   
-    
     const documentId = doc.id;
-    // ------------------------------------------
 
-    // 9. Inject as a new message with the dynamic documentId explicitly mapped
     const documentMessage = {
       role: 'user',
       content: `[DOCUMENT CONTENT extracted from uploaded PDF via ${extractionMethod === 'vision-ocr' ? 'AI vision transcription (scanned document — may contain transcription errors)' : 'native text layer'}, documentId: ${documentId}:]\n\n${finalText}`,
@@ -178,7 +176,8 @@ export async function POST(req: Request) {
     return new Response('PDF parsed, transitioning to orchestration loop', { status: 200 });
 
   } catch (error: any) {
-    console.error('[PARSE-PDF ERROR]:', error);
+    // SENTRY EXCEPTION LOGGING REPLACES CONSOLE.ERROR
+    reportError(error, { route: 'agent/parse-pdf', sessionId: activeSessionId });
 
     if (activeSessionId) {
       await prisma.agentSession.update({
