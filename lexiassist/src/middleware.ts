@@ -1,4 +1,4 @@
-//src/proxy.ts
+// src/middleware.ts
 import { withAuth } from "next-auth/middleware";
 
 // Explicitly define and export the middleware function
@@ -8,7 +8,10 @@ export default withAuth({
   },
 });
 
-// Protect the dashboard routes
+// Protect both the dashboard and the individual case routes
 export const config = {
-  matcher: ["/dashboard/:path*"],
+  matcher: [
+    "/dashboard/:path*",
+    "/case/:path*",
+  ],
 };

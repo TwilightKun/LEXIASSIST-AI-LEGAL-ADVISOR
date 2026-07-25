@@ -4,9 +4,10 @@ import { Receiver } from '@upstash/qstash';
 import { generateText } from 'ai';
 import { google } from '@ai-sdk/google';
 import Pusher from 'pusher';
-import { prisma } from '@/lib/prisma'; // Global Prisma singleton
+import { prisma } from '@/lib/prisma';
 import { buildLegalAgenticSystemPrompt } from '@/lib/ai/prompts/agent-prompt';
 import { legalTools } from '@/lib/schemas/tools/legal-schemas';
+import { reportError } from '@/lib/error-reporting';
 
 
 const receiver = new Receiver({
@@ -146,14 +147,14 @@ The user has requested a "legal risk assessment". You MUST execute the 'generate
       const clientSafeText = text.replace(/<scratchpad>[\s\S]*?<\/scratchpad>/g, '').trim();
       console.log(`[LOOP] Execution complete. Saving to DB. Session: ${sessionId}`);
 
-           // Pull the last tool-result from this turn, if any, so the frontend
-     // gets structured data alongside the prose — e.g. lawyer candidates
-     // to render as selectable cards, not something to parse out of text.
-     const lastToolResult = updatedMessages
-       .slice()
-       .reverse()
-       .find((m: any) => m.role === 'tool')
-       ?.content?.[0]?.output?.value;
+      // Pull the last tool-result from this turn, if any, so the frontend
+      // gets structured data alongside the prose — e.g. lawyer candidates
+      // to render as selectable cards, not something to parse out of text.
+      const lastToolResult = updatedMessages
+        .slice()
+        .reverse()
+        .find((m: any) => m.role === 'tool')
+        ?.content?.[0]?.output?.value;
       
       // 7. Terminal Database Write
       await prisma.agentSession.update({
@@ -187,7 +188,8 @@ The user has requested a "legal risk assessment". You MUST execute the 'generate
     }
 
   } catch (error: any) {
-    console.error('[LOOP_ERROR]:', error);
+    // SENTRY EXCEPTION LOGGING REPLACES CONSOLE.ERROR
+    reportError(error, { route: 'agent/loop', sessionId: activeSessionId ?? undefined });
     
     // Safety Net: Mark session as failed in DB if the loop crashes entirely
     if (activeSessionId) {

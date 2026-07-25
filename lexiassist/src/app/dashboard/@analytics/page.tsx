@@ -1,7 +1,17 @@
 // src/app/dashboard/@analytics/page.tsx
 import { prisma } from "@/lib/prisma";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth.config";
 
 export default async function AnalyticsSlot() {
+  // SECURITY FIX: Gate cross-tenant aggregate analytics to ADMIN
+  const session = await getServerSession(authOptions);
+  const role = (session?.user as any)?.role;
+
+  if (role !== "ADMIN") {
+    return null;
+  }
+
   // Run Prisma aggregations in parallel for maximum speed
   const [totalCases, triageCount, reviewCount, resolvedCount] = await Promise.all([
     prisma.caseBrief.count(),

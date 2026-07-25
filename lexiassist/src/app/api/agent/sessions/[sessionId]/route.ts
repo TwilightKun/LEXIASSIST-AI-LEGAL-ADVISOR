@@ -1,28 +1,22 @@
-// ============================================================================
-// ADD THIS FILE TO YOUR REPO AT: src/app/api/agent/sessions/[sessionId]/route.ts
-// ============================================================================
-//
-// WHY: Every test so far has relied on watching the server console because
-// init/loop/execute-tool all return 202/200 immediately and do the real work
-// async via QStash. That's fine for eyeballing a run, but the PDF-flow tests
-// need to actually assert on final state (did extraction succeed, did the
-// Document row get created, did redlines get stored) — which means polling.
-//
-// This is also genuinely useful later for the frontend (the dashboard needs
-// exactly this to know when a session is done), so it's not just test scaffolding.
-
+// src/app/api/agent/sessions/[sessionId]/route.ts
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { requireSessionAccess } from '@/lib/auth-helpers';
 
 export async function GET(
   req: Request,
-  { params }: { params: Promise<{ sessionId: string }> } // <-- 1. Type as Promise
+  { params }: { params: Promise<{ sessionId: string }> }
 ) {
-  const resolvedParams = await params; // <-- 2. Await the params
+  const resolvedParams = await params;
   const sessionId = resolvedParams.sessionId;
 
+  // SECURITY FIX: This was a fully open read before. Now, it verifies that
+  // the logged-in user actually owns (or is the assigned lawyer for) this session.
+  const auth = await requireSessionAccess(sessionId);
+  if (!auth.ok) return auth.response;
+
   const session = await prisma.agentSession.findUnique({
-    where: { id: sessionId }, // <-- 3. Use the unwrapped ID
+    where: { id: sessionId },
     include: {
       caseBrief: {
         include: {

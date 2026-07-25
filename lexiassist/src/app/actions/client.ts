@@ -1,9 +1,12 @@
-// src/app/actions/client.ts
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { requireCaseAccess } from "@/lib/auth-helpers";
 
 export async function getClientCaseDetails(caseId: string) {
+  const auth = await requireCaseAccess(caseId);
+  if (!auth.ok) return { success: false, error: auth.message };
+
   try {
     const caseBrief = await prisma.caseBrief.findUnique({
       where: { id: caseId },
@@ -13,7 +16,6 @@ export async function getClientCaseDetails(caseId: string) {
         status: true,
         createdAt: true,
         rawDescription: true,
-        // If a lawyer is assigned, fetch their basic info for the client
         lawyer: {
           select: {
             jurisdiction: true,

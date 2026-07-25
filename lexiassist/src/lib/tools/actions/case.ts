@@ -1,38 +1,43 @@
-// src/app/tools/actions/case.ts
+// src/lib/tools/actions/case.ts
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth.config";
 import { revalidatePath } from "next/cache";
+import { requireUser } from "@/lib/auth-helpers";
+import { enforceOpenCaseLimit } from "@/lib/limits";
 
 export async function createNewCase(title: string = "New Legal Inquiry") {
-  const session = await getServerSession(authOptions);
+  // Gate check: Apply shared auth, which automatically applies the general API rate limit
+  const auth = await requireUser();
+  if (!auth.ok) return { success: false, error: auth.message };
 
-  if (!session || !session.user || !(session.user as any).id) {
-    return { success: false, error: "Unauthorized session context." };
+  const userId = auth.session.user.id;
+
+  // Gate check: Prevent database spam by enforcing the active case limit
+  const overLimit = await enforceOpenCaseLimit(userId);
+  if (overLimit) {
+    const body = await overLimit.json();
+    return { success: false, error: body.error };
   }
-
-  const userId = (session.user as any).id;
 
   try {
     const newCase = await prisma.caseBrief.create({
-        data: {
+      data: {
         title: title,
         status: "TRIAGE",
         rawDescription: "", // Satisfies the mandatory database field constraint
         client: {
-            connect: { id: userId } // Establishes the safe foreign key relation mapping
+          connect: { id: userId } // Establishes the safe foreign key relation mapping
         }
-        },
+      },
     });
 
     // Purge the cache states for the dashboard views
     revalidatePath("/dashboard");
-    
+
     return { success: true, caseId: newCase.id, caseBrief: newCase };
-    } catch (error: any) {
+  } catch (error: any) {
     console.error("Critical case initialization failure:", error);
     return { success: false, error: "Failed to initialize case matrix." };
-    }
+  }
 }

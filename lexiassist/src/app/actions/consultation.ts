@@ -2,18 +2,20 @@
 
 import { prisma } from "@/lib/prisma";
 import { randomBytes } from "crypto";
+import { requireCaseAccess } from "@/lib/auth-helpers";
 
 export async function getOrInitializeConsultation(caseBriefId: string) {
+  const auth = await requireCaseAccess(caseBriefId);
+  if (!auth.ok) return { success: false, error: auth.message };
+
   try {
-    // 1. Check if a room already exists for this case
     let consultation = await prisma.consultation.findFirst({
       where: { caseBriefId, isCompleted: false },
     });
 
-    // 2. If no active room exists, initialize a new secure hash
     if (!consultation) {
       const secureRoomHash = `room-${randomBytes(8).toString("hex")}`;
-      
+
       consultation = await prisma.consultation.create({
         data: {
           caseBriefId,
@@ -32,7 +34,20 @@ export async function getOrInitializeConsultation(caseBriefId: string) {
 }
 
 export async function markConsultationComplete(consultationId: string, caseBriefId: string) {
+  const auth = await requireCaseAccess(caseBriefId);
+  if (!auth.ok) return { success: false, error: auth.message };
+
   try {
+    // Verify the consultation actually belongs to this case before touching it
+    const consultation = await prisma.consultation.findUnique({
+      where: { id: consultationId },
+      select: { caseBriefId: true },
+    });
+
+    if (!consultation || consultation.caseBriefId !== caseBriefId) {
+      return { success: false, error: "Consultation does not belong to this case." };
+    }
+
     await prisma.$transaction([
       prisma.consultation.update({
         where: { id: consultationId },
@@ -40,7 +55,7 @@ export async function markConsultationComplete(consultationId: string, caseBrief
       }),
       prisma.caseBrief.update({
         where: { id: caseBriefId },
-        data: { status: "RESOLVED" } // Move case to resolved upon completion
+        data: { status: "RESOLVED" }
       })
     ]);
     return { success: true };

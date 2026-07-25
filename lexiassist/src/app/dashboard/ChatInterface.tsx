@@ -1,3 +1,4 @@
+// src/app/dashboard/ChatInterface.tsx
 "use client";
 
 import { useState, useEffect, useRef } from "react";
@@ -8,11 +9,29 @@ import { useSession } from "next-auth/react";
 import { getChatHistory } from "@/app/actions/chat";
 import { saveDocumentRecord } from "@/app/actions/document";
 import { getPusherClient } from "@/lib/pusher/client";
-import { Loader2, Terminal, CheckCircle2, ShieldAlert } from "lucide-react";
+import { Loader2, Terminal, CheckCircle2, ShieldAlert, WifiOff } from "lucide-react";
 import { useUploadThing } from "@/utils/uploadthing";
 import { useAgentSession } from "@/hooks/useAgentSession";
 
-function tryParseLawyerPayload(content: string) {
+// ----------------------------------------------------------------------
+// STRUCTURED TOOL DATA & TYPES
+// ----------------------------------------------------------------------
+
+type ChatMessage = {
+  id: string;
+  role: string;
+  content: any;
+  structuredData?: { matchFound: boolean; matches?: any[]; reason?: string } | null;
+};
+
+// EXPLICIT TYPE FIX: This forces TypeScript to recognize the exact shapes,
+// fixing the "Property 'data' does not exist" errors in the map loop.
+type ParsedLawyerResult = 
+  | { type: "MATCH"; data: any[] } 
+  | { type: "NO_MATCH"; reason: string } 
+  | null;
+
+function tryParseLawyerPayload(content: string): ParsedLawyerResult {
   if (typeof content !== 'string') return null;
   const extractReason = (data: any) => data?.reason || data?.matches?.reason || "No available attorneys found for this specific criteria.";
 
@@ -23,19 +42,18 @@ function tryParseLawyerPayload(content: string) {
         const data = JSON.parse(block[1]);
         if (data?.matchFound === true && Array.isArray(data?.matches)) return { type: "MATCH", data: data.matches };
         if (data?.matchFound === false) return { type: "NO_MATCH", reason: extractReason(data) };
-        if (data?.matchVerifyLawyer_response?.content?.matchFound === true) return { type: "MATCH", data: data.matchVerifyLawyer_response.content.matches };
-        if (data?.matchVerifyLawyer_response?.content?.matchFound === false) return { type: "NO_MATCH", reason: extractReason(data.matchVerifyLawyer_response.content) };
-        if (data?.type === "LAWYER_MATCH_RESULTS" && Array.isArray(data?.lawyers)) return { type: "MATCH", data: data.lawyers };
       } catch (e) {}
-    }
-    const cleanContent = content.replace(/```json\n?|\n?```/g, "").trim();
-    if (cleanContent.startsWith("{") || cleanContent.startsWith("[")) {
-      const fallbackData = JSON.parse(cleanContent);
-      if (fallbackData?.matchFound === true && Array.isArray(fallbackData?.matches)) return { type: "MATCH", data: fallbackData.matches };
-      if (fallbackData?.matchFound === false) return { type: "NO_MATCH", reason: extractReason(fallbackData) };
     }
   } catch (e) { return null; }
   return null;
+}
+
+function extractToolResultStructuredData(m: { role: string; content: any }): ChatMessage["structuredData"] {
+  if (m.role !== "tool" || !Array.isArray(m.content)) return null;
+  const lawyerResult = m.content.find((c: any) => c?.toolName === "matchVerifyLawyer");
+  const value = lawyerResult?.output?.value;
+  if (!value || typeof value.matchFound !== "boolean") return null;
+  return value;
 }
 
 function LawyerSelectionCard({ lawyers, onSelect, isSelecting }: any) {
@@ -86,6 +104,18 @@ function AgentExecutionLoader({ realTimeStep }: { realTimeStep?: string }) {
   );
 }
 
+function RealtimeDegradedBanner({ onRetry }: { onRetry: () => void }) {
+  return (
+    <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="flex justify-center w-full mb-2">
+      <div className="flex items-center gap-3 px-4 py-2 bg-amber-950/20 border border-amber-900/40 rounded-full text-[10px] font-mono text-amber-500">
+        <WifiOff className="w-3 h-3" />
+        Realtime connection lost — responses may be delayed.
+        <button onClick={onRetry} className="underline hover:text-amber-300 transition-colors">Reconnect</button>
+      </div>
+    </motion.div>
+  );
+}
+
 interface ChatInterfaceProps {
   activeCaseId: string;
   cases: { id: string; title: string; status: string }[];
@@ -98,7 +128,7 @@ export default function ChatInterface({ activeCaseId, cases, onSwitchCase }: Cha
   const clientId = (session?.user as any)?.id;
 
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<{ id: string; role: string; content: any }[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [currentDocumentId, setCurrentDocumentId] = useState<string | null>(null);
 
@@ -106,12 +136,14 @@ export default function ChatInterface({ activeCaseId, cases, onSwitchCase }: Cha
   const [isInjecting, setIsInjecting] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isAwaitingResponse, setIsAwaitingResponse] = useState(false);
-  
+  const [realtimeDegraded, setRealtimeDegraded] = useState(false);
+
   const [attachedFile, setAttachedFile] = useState<{url: string, name: string, id: string} | null>(null);
   const { startUpload, isUploading } = useUploadThing("pdfUploader");
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const { status, currentStepText } = useAgentSession(activeSessionId);
   const isAgentLoading = isInjecting || isLoading || isAwaitingResponse;
@@ -127,30 +159,41 @@ export default function ChatInterface({ activeCaseId, cases, onSwitchCase }: Cha
     }
   }, [input]);
 
+  const finishAgentTurn = (content: string, structuredData: any) => {
+    let finalContent = content || "";
+    if (finalContent.trim() !== "" || structuredData) {
+      setMessages((prev) => [...prev, { id: Date.now().toString(), role: "assistant", content: finalContent, structuredData: structuredData ?? null }]);
+    }
+    setIsLoading(false);
+    setIsAwaitingResponse(false);
+    window.dispatchEvent(new Event('refresh-case-data'));
+    router.refresh();
+  };
+
   useEffect(() => {
     if (!activeSessionId) return;
     const pusher = getPusherClient();
-    if (!pusher) return;
+    if (!pusher) {
+      setRealtimeDegraded(true);
+      return;
+    }
+
     const channelName = `session-${activeSessionId}`;
     const channel = pusher.subscribe(channelName);
 
+    const handleStateChange = (states: { current: string }) => {
+      if (states.current === 'disconnected' || states.current === 'failed' || states.current === 'unavailable') {
+        setRealtimeDegraded(true);
+      } else if (states.current === 'connected') {
+        setRealtimeDegraded(false);
+      }
+    };
+    pusher.connection.bind('state_change', handleStateChange);
+
     channel.bind("agent:completed", (data: { status: string; content?: string; error?: string; structuredData?: any }) => {
       if (data.status === "COMPLETED") {
-        let finalContent = data.content || ""; 
-        if (data.structuredData && !finalContent.includes("matchFound")) {
-          finalContent = finalContent 
-            ? `${finalContent}\n\n\`\`\`json\n${JSON.stringify(data.structuredData)}\n\`\`\`` 
-            : `\`\`\`json\n${JSON.stringify(data.structuredData)}\n\`\`\``;
-        }
-        if (finalContent.trim() !== "") {
-          setMessages((prev) => [...prev, { id: Date.now().toString(), role: "assistant", content: finalContent }]);
-        }
-        setIsLoading(false);
-        setIsAwaitingResponse(false);
-        window.dispatchEvent(new Event('refresh-case-data'));
-        router.refresh(); 
-      } 
-      else if (data.status === "FAILED") {
+        finishAgentTurn(data.content || "", data.structuredData);
+      } else if (data.status === "FAILED") {
         setMessages((prev) => [...prev, { id: Date.now().toString(), role: "assistant", content: `[System Error]: ${data.error || data.content || "Orchestration engine failure."}` }]);
         setIsLoading(false);
         setIsAwaitingResponse(false);
@@ -158,10 +201,50 @@ export default function ChatInterface({ activeCaseId, cases, onSwitchCase }: Cha
     });
 
     return () => {
+      pusher.connection.unbind('state_change', handleStateChange);
       channel.unbind_all();
       pusher.unsubscribe(channelName);
     };
   }, [activeSessionId, router]);
+
+  useEffect(() => {
+    if (!realtimeDegraded || !activeSessionId || !isAwaitingResponse) {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+      return;
+    }
+
+    pollIntervalRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/agent/status?sessionId=${activeSessionId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.status === "COMPLETED") {
+          finishAgentTurn(data.content || "", data.metadata?.structuredData);
+        } else if (data.status === "FAILED") {
+          setMessages((prev) => [...prev, { id: Date.now().toString(), role: "assistant", content: "[System Error]: Orchestration engine failure." }]);
+          setIsLoading(false);
+          setIsAwaitingResponse(false);
+        }
+      } catch {
+        // Network hiccup mid-poll — just retry on the next tick.
+      }
+    }, 4000);
+
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
+  }, [realtimeDegraded, activeSessionId, isAwaitingResponse]);
+
+  const retryRealtimeConnection = () => {
+    const pusher = getPusherClient();
+    if (pusher?.connection?.state !== 'connected') {
+      pusher?.connect();
+    }
+    setRealtimeDegraded(false);
+  };
 
   useEffect(() => {
     const fetchHistory = async () => {
@@ -177,11 +260,35 @@ export default function ChatInterface({ activeCaseId, cases, onSwitchCase }: Cha
       const result = await getChatHistory(activeCaseId);
       if (result.success) {
         const rawMessages = (result.messages as any[]) || [];
-        const historicalMessages = rawMessages.map((m: any, index: number) => ({
-          id: `hist-${Date.now()}-${index}`,
-          role: m.role,
-          content: m.content,
-        }));
+        const historicalMessages: ChatMessage[] = [];
+
+        for (let index = 0; index < rawMessages.length; index++) {
+          const m = rawMessages[index];
+
+          if (m.role === "tool") {
+            const structuredData = extractToolResultStructuredData(m);
+            if (structuredData) {
+              historicalMessages.push({
+                id: `hist-${Date.now()}-${index}`,
+                role: "assistant",
+                content: "",
+                structuredData,
+              });
+            }
+            continue;
+          }
+
+          if (m.role === "assistant" && Array.isArray(m.content)) {
+            continue;
+          }
+
+          historicalMessages.push({
+            id: `hist-${Date.now()}-${index}`,
+            role: m.role,
+            content: m.content,
+          });
+        }
+
         setMessages(historicalMessages);
         setActiveSessionId(result.sessionId || null);
       }
@@ -208,7 +315,7 @@ export default function ChatInterface({ activeCaseId, cases, onSwitchCase }: Cha
     apiPrompt += `- RULES: If you execute Chronology or Redlines tools, do it silently (do not output the results in text). HOWEVER, if you execute the 'matchVerifyLawyer' tool, you MUST output the raw JSON result inside a \`\`\`json block so the UI can render the selection cards.`;
 
     if (!isSilentInjection) {
-      const userMsg = { id: Date.now().toString(), role: "user", content: apiPrompt };
+      const userMsg: ChatMessage = { id: Date.now().toString(), role: "user", content: apiPrompt };
       setMessages((prev) => [...prev, userMsg]);
       setInput("");
       setAttachedFile(null); 
@@ -222,7 +329,6 @@ export default function ChatInterface({ activeCaseId, cases, onSwitchCase }: Cha
     try {
       const payload: any = {
         prompt: apiPrompt,
-        clientId: clientId,
         caseBriefId: activeCaseId, 
         hasPdf: !!attachedFile,
         metadata: {},
@@ -265,7 +371,7 @@ export default function ChatInterface({ activeCaseId, cases, onSwitchCase }: Cha
       await submitMessage(`[SYSTEM INSTRUCTION]: The user has officially retained Attorney ${lawyerName} (ID: ${lawyerId}). Acknowledge this choice professionally and state that you are preparing the final case matrix.`, true);
       window.dispatchEvent(new Event('refresh-case-data'));
     } else {
-      setMessages((prev) => [...prev, { id: Date.now().toString(), role: "assistant", content: "[System Error]: Failed to secure attorney in the database." }]);
+      setMessages((prev) => [...prev, { id: Date.now().toString(), role: "assistant", content: `[System Error]: ${result.error || "Failed to secure attorney in the database."}` }]);
       setIsInjecting(false);
       setIsLoading(false);
     }
@@ -314,6 +420,8 @@ export default function ChatInterface({ activeCaseId, cases, onSwitchCase }: Cha
 
       <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-zinc-800">
         
+        {realtimeDegraded && <RealtimeDegradedBanner onRetry={retryRealtimeConnection} />}
+
         {isFetchingHistory ? (
           <div className="h-full flex flex-col items-center justify-center p-4">
             <span className="h-6 w-6 rounded-full bg-emerald-500/50 animate-ping mb-4" />
@@ -355,7 +463,13 @@ export default function ChatInterface({ activeCaseId, cases, onSwitchCase }: Cha
             }
 
             const isSystemMessage = typeof m.content === "string" && (m.content.startsWith("[System") || m.content.startsWith("[System Error]"));
-            const parsedLawyers = typeof m.content === "string" ? tryParseLawyerPayload(m.content) : null;
+
+            // TS FIX: By explicitly typing parsedLawyers, TS allows us to access .data
+            const parsedLawyers: ParsedLawyerResult = m.structuredData
+              ? (m.structuredData.matchFound
+                  ? { type: "MATCH", data: m.structuredData.matches ?? [] }
+                  : { type: "NO_MATCH", reason: m.structuredData.reason ?? "No available attorneys found for this specific criteria." })
+              : (typeof m.content === "string" ? tryParseLawyerPayload(m.content) : null);
 
             if (parsedLawyers?.type === "MATCH") {
               return (
@@ -392,19 +506,17 @@ export default function ChatInterface({ activeCaseId, cases, onSwitchCase }: Cha
 
             let displayContent = m.content;
             let hasAttachment = false;
-            let attachmentName = "Document.pdf"; // Fallback text
+            let attachmentName = "Document.pdf"; 
 
             if (typeof m.content === "string") {
               displayContent = displayContent.replace(/<scratchpad>[\s\S]*?<\/scratchpad>/gi, '').trim();
               displayContent = displayContent.replace(/```json[\s\S]*?```/gi, '').trim();
               
-              //  EXTRACT NEW FORMAT
               const nameMatch = displayContent.match(/\[Attachment Name:\s*(.*?)\]/i);
               if (nameMatch && nameMatch[1]) {
                 attachmentName = nameMatch[1].trim();
               }
 
-              //  EXTRACT LEGACY FORMAT (Prevents older chat histories from breaking)
               const legacyMatch = displayContent.match(/📎 Attached Document:\s*(.*)/i);
               if (legacyMatch && legacyMatch[1]) {
                 attachmentName = legacyMatch[1].trim();
@@ -412,20 +524,19 @@ export default function ChatInterface({ activeCaseId, cases, onSwitchCase }: Cha
                 displayContent = displayContent.replace(/📎 Attached Document:.*?(\n|$)/gim, '').trim();
               }
               
-              // Scrub tags out of the visual text
               if (displayContent.includes("[Attached File URL:") || displayContent.includes("[Attachment Name:")) {
                 hasAttachment = true;
                 displayContent = displayContent.replace(/\[Attached File URL:.*?\]/gi, '').trim();
                 displayContent = displayContent.replace(/\[Attachment Name:.*?\]/gi, '').trim();
               }
               
-              // AGGRESSIVE CLEANUP: Destroy backend-saved system instructions
               displayContent = displayContent.replace(/\[STRICT SYSTEM INSTRUCTIONS\]:?[\s\S]*/gi, '').trim();
               displayContent = displayContent.replace(/\[SYSTEM INSTRUCTION\]:?[\s\S]*/gi, '').trim();
               displayContent = displayContent.replace(/\[SYSTEM INSTRUCTION:.*?\]/gi, '').trim();
+            } else if (!m.structuredData) {
+              return null;
             }
 
-            // HIDE GHOST BUBBLES
             if (typeof m.content === "string" && (displayContent.startsWith("[SYSTEM EVENT]"))) return null;
             if (!displayContent && !hasAttachment) return null;
 
@@ -436,7 +547,6 @@ export default function ChatInterface({ activeCaseId, cases, onSwitchCase }: Cha
                     {m.role === "user" ? "Client" : "LexiAssist"}
                   </span>
 
-                  {/* SLEEK BADGE INJECTED ABOVE TEXT BUBBLE */}
                   {hasAttachment && m.role === "user" && (
                     <div className="flex items-center gap-2 mb-1 px-3 py-2 bg-zinc-800/40 border border-zinc-700/50 rounded-xl text-[11px] font-mono text-zinc-300 shadow-sm backdrop-blur-sm">
                       <svg className="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -446,7 +556,6 @@ export default function ChatInterface({ activeCaseId, cases, onSwitchCase }: Cha
                     </div>
                   )}
                   
-                  {/* CONDITIONAL TEXT BUBBLE RENDERING */}
                   {displayContent && (
                     <div className={`p-5 text-sm sm:text-[15px] leading-relaxed shadow-sm transition-all whitespace-pre-wrap wrap-break-word text-left
                       ${m.role === "user" 

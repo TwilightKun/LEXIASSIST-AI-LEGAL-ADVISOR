@@ -3,30 +3,49 @@ import { prisma } from '@/lib/prisma';
 import { NextResponse } from 'next/server';
 import { Client } from '@upstash/qstash';
 import { z } from 'zod';
-import { getBaseUrl } from "@/lib/tools/actions/getBaseurl"
+import { getBaseUrl } from "@/lib/tools/actions/getBaseurl";
+import { requireUser, requireRateLimited } from '@/lib/auth-helpers';
+import { agentInitLimiter, agentInitDailyLimiter } from '@/lib/rate-limit';
+import { JURISDICTIONS } from '@/lib/constants/jurisdictions';
+import { LEGAL_DOMAINS } from '@/lib/schemas/tools/legal-schemas';
+import { reportError } from '@/lib/error-reporting'; // <-- SENTRY IMPORT ADDED
 
 const qstashClient = new Client({ token: process.env.QSTASH_TOKEN! });
 
-// 1. Strict Input Validation Schema
+// SECURITY FIX: jurisdiction and legalDomain now use strict Enums.
+// This completely closes the prompt-injection vector by ensuring malformed
+// or adversarial inputs are rejected with a 400 error before ever reaching the LLM.
 const InitRequestSchema = z.object({
   prompt: z.string().min(1, "Prompt cannot be empty"),
-  clientId: z.string().uuid("Invalid Client ID"),
-  sessionId: z.string().uuid("Invalid Session ID").optional(), // Pass this to continue a chat
+  sessionId: z.string().uuid("Invalid Session ID").optional(),
   caseBriefId: z.string().uuid("Invalid Case Brief ID"),
   fileUrl: z.string().url("Invalid File URL").optional(),
   hasPdf: z.boolean().default(false),
   metadata: z.object({
-    jurisdiction: z.string().optional(),
-    legalDomain: z.string().optional(),
-    estimatedBudget: z.number().optional(),
+    jurisdiction: z.enum(JURISDICTIONS).optional(),
+    legalDomain: z.enum(LEGAL_DOMAINS).optional(),
+    estimatedBudget: z.number().positive().optional(),
   }).default({}),
 });
 
 export async function POST(req: Request) {
+  const auth = await requireUser();
+  if (!auth.ok) return auth.response;
+  const clientId = auth.session.user.id;
+
+  // Enforce hourly burst limit
+  const hourlyLimited = await requireRateLimited(agentInitLimiter, clientId);
+  if (hourlyLimited) return hourlyLimited;
+
+  // Enforce daily cost ceiling
+  const dailyLimited = await requireRateLimited(agentInitDailyLimiter, clientId);
+  if (dailyLimited) return dailyLimited;
+
+  let activeSessionId: string | undefined = undefined;
+
   try {
     const body = await req.json();
 
-    // 2. Validate Incoming Payload
     const parsedData = InitRequestSchema.safeParse(body);
     if (!parsedData.success) {
       return NextResponse.json(
@@ -35,9 +54,8 @@ export async function POST(req: Request) {
       );
     }
 
-    const { prompt, clientId, sessionId: incomingSessionId, fileUrl, hasPdf, metadata } = parsedData.data;
+    const { prompt, sessionId: incomingSessionId, fileUrl, hasPdf, metadata } = parsedData.data;
 
-    // 3. Format the new user message
     const newUserMessage = {
       role: 'user',
       content: hasPdf && fileUrl
@@ -45,17 +63,19 @@ export async function POST(req: Request) {
         : prompt,
     };
 
-    let activeSessionId = incomingSessionId;
+    activeSessionId = incomingSessionId;
     let messagesHistory: any[] = [];
 
-    // 4. State Rehydration & DB Operations
     if (activeSessionId) {
-      // CONTINUATION: Fetch existing session and append
       const existingSession = await prisma.agentSession.findUnique({
         where: { id: activeSessionId },
       });
 
       if (!existingSession) {
+        return NextResponse.json({ error: 'Session not found' }, { status: 404 });
+      }
+
+      if (existingSession.clientId !== clientId) {
         return NextResponse.json({ error: 'Session not found' }, { status: 404 });
       }
 
@@ -66,33 +86,26 @@ export async function POST(req: Request) {
         );
       }
 
-      // Parse existing messages (default to empty array if null)
       messagesHistory = existingSession.messages
         ? (existingSession.messages as any[])
         : [];
 
       messagesHistory.push(newUserMessage);
 
-      // Lock the session back to PROCESSING mode
       await prisma.agentSession.update({
         where: { id: activeSessionId },
         data: {
           status: 'PROCESSING',
-          messages: messagesHistory, // Update DB before network dispatch
+          messages: messagesHistory,
         }
       });
 
     } else {
-      // NEW SESSION: Create record with the first message
       messagesHistory = [newUserMessage];
 
-      // If caseBriefId was supplied, verify it actually belongs to this client
-      // before linking — never trust a client-supplied ID blindly.
-      if (parsedData.data.caseBriefId) {
-        const brief = await prisma.caseBrief.findUnique({ where: { id: parsedData.data.caseBriefId } });
-        if (!brief || brief.clientId !== clientId) {
-          return NextResponse.json({ error: 'Case not found or does not belong to this client' }, { status: 404 });
-        }
+      const brief = await prisma.caseBrief.findUnique({ where: { id: parsedData.data.caseBriefId } });
+      if (!brief || brief.clientId !== clientId) {
+        return NextResponse.json({ error: 'Case not found or does not belong to this client' }, { status: 404 });
       }
 
       const newSession = await prisma.agentSession.create({
@@ -107,19 +120,16 @@ export async function POST(req: Request) {
       activeSessionId = newSession.id;
     }
 
-    // 5. Construct Queue Payload for the Hot Network Loop
     const queuePayload = {
       sessionId: activeSessionId,
       clientId,
       currentStep: 0,
       metadata,
-      messages: messagesHistory, // Full context passed to Gemini
+      messages: messagesHistory,
     };
 
-    // 6. Hardened Dynamic Host Resolution
     const currentAppUrl = getBaseUrl(req);
 
-    // 7. Routing Fork: PDF Pre-Processing vs Standard Loop
     if (hasPdf && fileUrl) {
       console.log(`[INIT] File detected. Dispatching Session ${activeSessionId} to PDF Parser.`);
       await qstashClient.publishJSON({
@@ -136,7 +146,6 @@ export async function POST(req: Request) {
       });
     }
 
-    // 8. Asynchronous 202 Release
     return NextResponse.json(
       {
         message: 'Legal intake process accepted and queued.',
@@ -146,7 +155,8 @@ export async function POST(req: Request) {
     );
 
   } catch (error: any) {
-    console.error('[INIT_ERROR] Failed to initialize agent sequence:', error);
+    // SENTRY EXCEPTION LOGGING REPLACES CONSOLE.ERROR
+    reportError(error, { route: 'agent/init', sessionId: activeSessionId });
     return NextResponse.json(
       { error: 'Internal Server Error during intake initialization', details: error?.message },
       { status: 500 }

@@ -2,6 +2,7 @@
 import { NextResponse } from 'next/server';
 import { Receiver } from '@upstash/qstash';
 import { pusher } from '@/lib/pusher/server';
+import { reportError } from '@/lib/error-reporting';
 
 import {
   extractCaseChronologySchema,
@@ -210,10 +211,8 @@ export async function POST(req: Request) {
       sessionId,
     });
   } catch (error: any) {
-    console.error(
-      '[EXECUTE-TOOL ERROR] Asynchronous execution breakdown:',
-      error
-    );
+    // SENTRY EXCEPTION LOGGING REPLACES CONSOLE.ERROR
+    reportError(error, { route: 'agent/execute-tool', sessionId: payload?.sessionId });
 
     if (payload?.sessionId) {
       await pusher

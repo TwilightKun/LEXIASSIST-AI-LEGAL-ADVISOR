@@ -1,11 +1,13 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth.config";
 import { pusher } from "@/lib/pusher/server";
+import { requireCaseAccess } from "@/lib/auth-helpers";
 
 export async function getDirectMessages(caseBriefId: string) {
+  const auth = await requireCaseAccess(caseBriefId);
+  if (!auth.ok) return { success: false, error: auth.message };
+
   try {
     const messages = await prisma.directMessage.findMany({
       where: { caseBriefId },
@@ -24,16 +26,11 @@ export async function getDirectMessages(caseBriefId: string) {
 }
 
 export async function sendDirectMessage(caseBriefId: string, content: string) {
-  const session = await getServerSession(authOptions);
-  
-  if (!session || !session.user || !(session.user as any).id) {
-    return { success: false, error: "Unauthorized" };
-  }
-
-  const senderId = (session.user as any).id;
+  const auth = await requireCaseAccess(caseBriefId);
+  if (!auth.ok) return { success: false, error: auth.message };
+  const senderId = auth.session.user.id;
 
   try {
-    // 1. Save the message to the database
     const message = await prisma.directMessage.create({
       data: {
         content,
@@ -47,7 +44,6 @@ export async function sendDirectMessage(caseBriefId: string, content: string) {
       }
     });
 
-    // 2. Broadcast the new message to the room instantly
     await pusher.trigger(`chat-${caseBriefId}`, 'new-message', message);
 
     return { success: true, message };
