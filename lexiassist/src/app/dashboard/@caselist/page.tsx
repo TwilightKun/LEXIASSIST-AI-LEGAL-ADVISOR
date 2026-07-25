@@ -1,12 +1,27 @@
 // src/app/dashboard/@caselist/page.tsx
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth.config";
 
 export default async function CaseListSlot() {
-  // Fetch live CaseBriefs and join the User (client) data
+  // SECURITY FIX: Gate previously unprotected cross-tenant data fetch to ADMIN
+  const session = await getServerSession(authOptions);
+  const role = (session?.user as any)?.role;
+
+  if (role !== "ADMIN") {
+    return null;
+  }
+
   const liveCases = await prisma.caseBrief.findMany({
-    include: {
-      client: true, 
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      createdAt: true,
+      aiRiskAnalysis: true,
+      // SECURITY FIX: Scope client selection to prevent password hash leakage
+      client: { select: { name: true, email: true } }, 
     },
     orderBy: { createdAt: 'desc' },
     take: 10,
@@ -32,15 +47,13 @@ export default async function CaseListSlot() {
         )}
 
         {liveCases.map((c) => {
-          // Extract data safely based on your schema
           const clientName = c.client?.name || c.client?.email || "Anonymous Client";
-          // Try to get a risk score from the JSON, fallback to a default if missing
-          const riskScore = (c.aiRiskAnalysis as any)?.riskScore || 0; 
-          
+          const riskScore = (c.aiRiskAnalysis as any)?.riskScore || 0;
+
           return (
-            <Link 
-              href={`/case/${c.id}`} 
-              key={c.id} 
+            <Link
+              href={`/case/${c.id}`}
+              key={c.id}
               className="group flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-xl border border-zinc-800/50 bg-zinc-900/10 hover:bg-zinc-900/40 hover:border-zinc-700/80 transition-all cursor-pointer"
             >
               <div className="space-y-1">
@@ -72,7 +85,7 @@ export default async function CaseListSlot() {
                   </svg>
                 </button>
               </div>
-            </Link> 
+            </Link>
           );
         })}
       </div>

@@ -1,10 +1,12 @@
-//src/app/actions/chat.ts
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { requireCaseAccess } from "@/lib/auth-helpers";
 
-// Fetches the most recent session history for a specific case brief
 export async function getChatHistory(caseBriefId: string) {
+  const auth = await requireCaseAccess(caseBriefId);
+  if (!auth.ok) return { success: false, error: auth.message };
+
   try {
     const session = await prisma.agentSession.findFirst({
       where: { caseBriefId },

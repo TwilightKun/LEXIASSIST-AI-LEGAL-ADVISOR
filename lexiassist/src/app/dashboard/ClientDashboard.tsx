@@ -1,3 +1,4 @@
+// src/app/dashboard/ClientDashboard.tsx
 "use client";
 
 import { useState, useTransition, useEffect, useCallback } from "react";
@@ -27,7 +28,7 @@ type CaseBrief = {
 };
 
 export default function ClientDashboard({ initialCases }: { initialCases: CaseBrief[] }) {
-  const router = useRouter(); // 🔴 Added router
+  const router = useRouter(); 
 
   const [activeTab, setActiveTab] = useState<number>(1);
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);

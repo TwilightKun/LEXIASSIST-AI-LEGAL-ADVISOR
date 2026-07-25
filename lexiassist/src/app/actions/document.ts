@@ -1,34 +1,29 @@
+// src/app/actions/document.ts
 "use server";
 
-import { prisma } from "@/lib/prisma"; 
+import { prisma } from "@/lib/prisma";
+import { requireCaseAccess } from "@/lib/auth-helpers";
 
 // ==========================================
 // 1. UPLOAD & SAVE DOCUMENT
 // ==========================================
 export async function saveDocumentRecord(fileUrl: string, caseBriefId: string) {
+  if (!fileUrl || !caseBriefId) {
+    return { success: false, error: "Missing required document parameters." };
+  }
+
+  // Session & Ownership Check: Ensures user owns or is assigned to this case
+  const auth = await requireCaseAccess(caseBriefId);
+  if (!auth.ok) {
+    return { success: false, error: auth.message };
+  }
+
   try {
-    let validCaseBriefId = caseBriefId;
-
-    // Dev Fallback: Map to an active case if the UI hasn't fully registered the ID
-    if (validCaseBriefId === "test-case-id") {
-      const activeBrief = await prisma.caseBrief.findFirst();
-      
-      if (activeBrief) {
-        validCaseBriefId = activeBrief.id;
-      } else {
-        return { 
-          success: false, 
-          error: "Database constraint error: No active Case Brief found to attach this document to." 
-        };
-      }
-    }
-
-    // Strict Insertion: Creates the DB row and generates the UUID that the AI needs
     const newDoc = await prisma.document.create({
       data: {
-        fileUrl: fileUrl,
-        caseBriefId: validCaseBriefId, 
-        extractedText: "Pending extraction...", 
+        fileUrl,
+        caseBriefId,
+        extractedText: "Pending extraction...",
       },
     });
 
@@ -43,8 +38,17 @@ export async function saveDocumentRecord(fileUrl: string, caseBriefId: string) {
 // 2. FETCH DOCUMENT FOR REDLINE VIEWER
 // ==========================================
 export async function getCaseDocument(caseBriefId: string) {
+  if (!caseBriefId) {
+    return { success: false, error: "Case Brief ID required." };
+  }
+
+  // Session & Ownership Check: Ensures user owns or is assigned to this case
+  const auth = await requireCaseAccess(caseBriefId);
+  if (!auth.ok) {
+    return { success: false, error: auth.message };
+  }
+
   try {
-    // Fetches the most recent document payload, including the AI-generated redlines JSON blob
     const document = await prisma.document.findFirst({
       where: { caseBriefId },
       orderBy: { createdAt: "desc" },

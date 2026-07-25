@@ -1,10 +1,12 @@
-//src/app/actions/getCaseData.ts
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { requireCaseAccess } from "@/lib/auth-helpers";
 
-// fetcher for Tabs 3 (Redlines) & 4 (Chronology)
 export async function getCaseData(caseBriefId: string) {
+  const auth = await requireCaseAccess(caseBriefId);
+  if (!auth.ok) return { success: false, error: auth.message };
+
   try {
     const caseData = await prisma.caseBrief.findUnique({
       where: { id: caseBriefId },

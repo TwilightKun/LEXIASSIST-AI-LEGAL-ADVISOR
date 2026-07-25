@@ -1,10 +1,13 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { requireCaseAccess } from "@/lib/auth-helpers";
 
 export async function getCaseChronology(caseBriefId: string) {
+  const auth = await requireCaseAccess(caseBriefId);
+  if (!auth.ok) return { success: false, error: auth.message };
+
   try {
-    // We strictly select ONLY the aiTimeline column. No heavy documents attached.
     const caseBrief = await prisma.caseBrief.findUnique({
       where: { id: caseBriefId },
       select: { aiTimeline: true }

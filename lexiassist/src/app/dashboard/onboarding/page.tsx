@@ -4,30 +4,22 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { onboardLawyer } from "@/app/actions/lawyer";
+import { JURISDICTIONS } from "@/lib/constants/jurisdictions";
+import { LEGAL_DOMAINS } from "@/lib/schemas/tools/legal-schemas";
 
 export default function LawyerOnboardingPage() {
-  const [jurisdiction, setJurisdiction] = useState("");
+  const [jurisdiction, setJurisdiction] = useState<string>("");
   const [experienceYrs, setExperienceYrs] = useState<number>(2);
-  const [specInput, setSpecInput] = useState("");
   const [specializations, setSpecializations] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  
+
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
 
-  // Add tag specialization array mapping
-  const handleAddSpecialization = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && specInput.trim()) {
-      e.preventDefault();
-      if (!specializations.includes(specInput.trim())) {
-        setSpecializations([...specializations, specInput.trim()]);
-      }
-      setSpecInput("");
-    }
-  };
-
-  const removeSpecialization = (tag: string) => {
-    setSpecializations(specializations.filter((s) => s !== tag));
+  const toggleSpecialization = (domain: string) => {
+    setSpecializations((prev) =>
+      prev.includes(domain) ? prev.filter((s) => s !== domain) : [...prev, domain]
+    );
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -35,23 +27,22 @@ export default function LawyerOnboardingPage() {
     setError(null);
 
     if (specializations.length === 0) {
-      setError("Please add at least one focus specialization area.");
+      setError("Please select at least one focus specialization area.");
       return;
     }
-    if (!jurisdiction.trim()) {
-      setError("Jurisdiction geographical boundary region is required.");
+    if (!jurisdiction) {
+      setError("Please select a jurisdiction.");
       return;
     }
 
     startTransition(async () => {
       const result = await onboardLawyer({
         specialization: specializations,
-        jurisdiction: jurisdiction.trim(),
+        jurisdiction,
         experienceYrs: Number(experienceYrs),
       });
 
       if (result.success) {
-        // Snap to the verified dynamic slots view instantly
         router.push("/dashboard");
         router.refresh();
       } else {
@@ -63,7 +54,7 @@ export default function LawyerOnboardingPage() {
   return (
     <div className="min-h-screen bg-[#08080a] text-zinc-200 flex items-center justify-center p-6 selection:bg-zinc-800">
       <div className="w-full max-w-xl rounded-2xl border border-zinc-800/60 bg-[#0c0c0e]/80 p-8 shadow-2xl backdrop-blur-xl space-y-6">
-        
+
         <div>
           <h2 className="text-xl font-light tracking-wide text-white">Attorney Portal Onboarding</h2>
           <p className="text-xs text-zinc-500 font-mono mt-1">// Establish credentials matrix mapping for client matching.</p>
@@ -76,18 +67,21 @@ export default function LawyerOnboardingPage() {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-5 text-sm">
-          {/* Jurisdiction Entry */}
+          {/* DATA-INTEGRITY FIX: Jurisdiction Picker constrained to exact ENUM list */}
           <div className="space-y-2">
             <label className="block text-xs font-mono uppercase tracking-wider text-zinc-400">Geographic Jurisdiction</label>
-            <input
-              type="text"
+            <select
               required
               disabled={isPending}
-              placeholder="e.g., California, Federal District Court"
               value={jurisdiction}
               onChange={(e) => setJurisdiction(e.target.value)}
-              className="w-full rounded-xl border border-zinc-800/60 bg-zinc-900/20 px-4 py-3 text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 transition-colors"
-            />
+              className="w-full rounded-xl border border-zinc-800/60 bg-zinc-900/20 px-4 py-3 text-zinc-200 focus:outline-none focus:border-zinc-700 transition-colors appearance-none"
+            >
+              <option value="" disabled>Select a jurisdiction...</option>
+              {JURISDICTIONS.map((j) => (
+                <option key={j} value={j} className="bg-[#0c0c0e]">{j}</option>
+              ))}
+            </select>
           </div>
 
           {/* Years Experience Entry */}
@@ -105,37 +99,30 @@ export default function LawyerOnboardingPage() {
             />
           </div>
 
-          {/* Specialization Array Builder */}
+          {/* DATA-INTEGRITY FIX: Specialization Picker multi-select against exact LEGAL_DOMAINS */}
           <div className="space-y-2">
             <label className="block text-xs font-mono uppercase tracking-wider text-zinc-400">Areas of Legal Specialization</label>
-            <p className="text-[10px] text-zinc-600 font-mono">Type focus (e.g., Corporate Law) and hit [Enter] to map tag</p>
-            <input
-              type="text"
-              disabled={isPending}
-              placeholder={specializations.length === 0 ? "e.g., IP Litigation, Family Law" : "Add more areas..."}
-              value={specInput}
-              onChange={(e) => setSpecInput(e.target.value)}
-              onKeyDown={handleAddSpecialization}
-              className="w-full rounded-xl border border-zinc-800/60 bg-zinc-900/20 px-4 py-3 text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 transition-colors"
-            />
+            <p className="text-[10px] text-zinc-600 font-mono">Select every area you practice in</p>
 
-            {/* Rendered Specialization Tags */}
-            <div className="flex flex-wrap gap-2 pt-2">
-              {specializations.map((tag, idx) => (
-                <span 
-                  key={idx} 
-                  className="inline-flex items-center gap-2 rounded-lg bg-zinc-900 border border-zinc-800 px-2.5 py-1 text-xs text-zinc-300 font-mono"
-                >
-                  {tag}
+            <div className="flex flex-wrap gap-2 pt-1">
+              {LEGAL_DOMAINS.map((domain) => {
+                const isSelected = specializations.includes(domain);
+                return (
                   <button
+                    key={domain}
                     type="button"
-                    onClick={() => removeSpecialization(tag)}
-                    className="text-zinc-500 hover:text-rose-400 transition-colors font-sans text-xs font-bold pl-1"
+                    disabled={isPending}
+                    onClick={() => toggleSpecialization(domain)}
+                    className={`rounded-lg border px-3 py-1.5 text-xs font-mono transition-colors ${
+                      isSelected
+                        ? "bg-emerald-950/40 border-emerald-700/60 text-emerald-300"
+                        : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-700"
+                    }`}
                   >
-                    ×
+                    {domain}
                   </button>
-                </span>
-              ))}
+                );
+              })}
             </div>
           </div>
 

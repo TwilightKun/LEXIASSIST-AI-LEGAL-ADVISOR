@@ -24,7 +24,10 @@ export default function ConsultationRoom({ caseId, consultationId, webrtcRoomId,
   
   const peerConnection = useRef<RTCPeerConnection | null>(null);
   const localStream = useRef<MediaStream | null>(null);
-  const hasInitialized = useRef(false); // Prevents React StrictMode double-firing
+  const hasInitialized = useRef(false);
+  
+  // WebRTC Race Condition Buffer (ICE Candidates)
+  const pendingIceCandidates = useRef<RTCIceCandidateInit[]>([]);
 
   useEffect(() => {
     if (hasInitialized.current) return;
@@ -32,62 +35,88 @@ export default function ConsultationRoom({ caseId, consultationId, webrtcRoomId,
 
     const initWebRTC = async () => {
       try {
-        // 1. Get Local Camera & Mic
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         localStream.current = stream;
         if (localVideoRef.current) localVideoRef.current.srcObject = stream;
 
-        // 2. Initialize Peer Connection (Using Google's free STUN server to find IP addresses)
         pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
         peerConnection.current = pc;
 
-        // 3. Add local tracks to the connection
         stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-        // 4. Listen for the remote stream arriving
         pc.ontrack = (event) => {
           if (remoteVideoRef.current) {
             remoteVideoRef.current.srcObject = event.streams[0];
-            setIsConnecting(false); // Hide the loader, show the video!
+            setIsConnecting(false); 
           }
         };
 
-        // 5. Send ICE candidates to the other person via our API route
         pc.onicecandidate = (event) => {
           if (event.candidate) {
             sendSignal('candidate', event.candidate);
           }
         };
 
-        // 6. Set up Pusher to listen for signals
+        const flushIceCandidates = async () => {
+          for (const candidate of pendingIceCandidates.current) {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
+          }
+          pendingIceCandidates.current = [];
+        };
+
+        // Helper to prevent the "Double-Trigger" offer collision
+        const initiateCall = async () => {
+          if (pc.signalingState !== 'stable') return; // Already negotiating!
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          sendSignal('offer', offer);
+        };
+
         const pusher = getPusherClient();
         if (!pusher) return;
         const channel = pusher.subscribe(`room-${webrtcRoomId}`);
         
         channel.bind('webrtc-signal', async (data: any) => {
-          // Ignore our own signals
           if (data.sender === (isLawyer ? 'lawyer' : 'client')) return;
 
           if (data.type === 'offer') {
             await pc.setRemoteDescription(new RTCSessionDescription(data.payload));
+            await flushIceCandidates(); 
+            
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
             sendSignal('answer', answer);
+            
           } else if (data.type === 'answer') {
+            // FIX: Prevent crashing if an answer arrives while already connected
+            if (pc.signalingState !== 'have-local-offer') {
+              console.warn("Ignored redundant answer. Current state:", pc.signalingState);
+              return; 
+            }
             await pc.setRemoteDescription(new RTCSessionDescription(data.payload));
+            await flushIceCandidates(); 
+            
           } else if (data.type === 'candidate') {
-            await pc.addIceCandidate(new RTCIceCandidate(data.payload));
+            if (pc.remoteDescription && pc.remoteDescription.type) {
+              await pc.addIceCandidate(new RTCIceCandidate(data.payload)).catch(console.error);
+            } else {
+              pendingIceCandidates.current.push(data.payload);
+            }
+            
           } else if (data.type === 'join') {
-            // If the other person just joined, and I am the Lawyer, I will create the Offer!
             if (isLawyer) {
-              const offer = await pc.createOffer();
-              await pc.setLocalDescription(offer);
-              sendSignal('offer', offer);
+              await initiateCall();
+            } else {
+              sendSignal('client-ready', null);
+            }
+            
+          } else if (data.type === 'client-ready') {
+            if (isLawyer) {
+              await initiateCall();
             }
           }
         });
 
-        // 7. Tell the room we have arrived
         sendSignal('join', null);
 
       } catch (err) {
@@ -100,7 +129,6 @@ export default function ConsultationRoom({ caseId, consultationId, webrtcRoomId,
     initWebRTC();
 
     return () => {
-      // Cleanup on unmount
       if (localStream.current) localStream.current.getTracks().forEach(t => t.stop());
       if (peerConnection.current) peerConnection.current.close();
       const pusher = getPusherClient();
@@ -108,7 +136,6 @@ export default function ConsultationRoom({ caseId, consultationId, webrtcRoomId,
     };
   }, [webrtcRoomId, isLawyer]);
 
-  // Utility to bounce signals off the API
   const sendSignal = async (type: string, payload: any) => {
     await fetch('/api/webrtc/signal', {
       method: 'POST',
@@ -122,7 +149,6 @@ export default function ConsultationRoom({ caseId, consultationId, webrtcRoomId,
     });
   };
 
-  // Hardware Toggles
   useEffect(() => {
     if (localStream.current) {
       localStream.current.getAudioTracks().forEach(t => t.enabled = isMicOn);
