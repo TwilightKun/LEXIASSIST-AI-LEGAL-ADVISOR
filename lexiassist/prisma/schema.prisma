@@ -28,13 +28,14 @@ model User {
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
   directMessages DirectMessage[]
-  
+
   // Relations
   lawyerProfile LawyerProfile?
   clientCases    CaseBrief[]    @relation("ClientCases")
-  agentSessions  AgentSession[] @relation("ClientSessions") // <-- NEW
-  
-  @@index([email])
+  agentSessions  AgentSession[] @relation("ClientSessions")
+
+  // REMOVED @@index([email]): `email String @unique` already creates a
+  // unique index on this column automatically.
   @@index([role])
 }
 
@@ -42,16 +43,15 @@ model LawyerProfile {
   id             String         @id @default(uuid())
   userId         String         @unique
   user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  specialization String[]       // e.g., ["Corporate", "Family Law"]
-  jurisdiction   String         // Geographic matching region
+  specialization String[]       
+  jurisdiction   String         
   experienceYrs  Int
   isAvailable    Boolean        @default(true)
-  
+
   // Relations
   assignedCases  CaseBrief[]    @relation("LawyerCases")
 
-  // Indexes specific to Lawyer searches
-  @@index([userId])
+  // REMOVED @@index([userId]): Redundant due to @unique constraint.
   @@index([jurisdiction])
   @@index([isAvailable])
 }
@@ -62,73 +62,75 @@ model CaseBrief {
   client         User           @relation("ClientCases", fields: [clientId], references: [id])
   lawyerId       String?
   lawyer         LawyerProfile? @relation("LawyerCases", fields: [lawyerId], references: [id])
-  
+
   title          String
   rawDescription String         @db.Text
   status         CaseStatus     @default(TRIAGE)
   directMessages DirectMessage[]
-  
+
   // AI Generated Structured Outputs stored safely as JSON
-  aiTimeline     Json?          // Structured chronological array of events
-  aiEntities     Json?          // Extracted names, business names, dates
-  aiRiskAnalysis Json?          // Key legal vulnerabilities identified by LLM
+  aiTimeline     Json?
+  aiEntities     Json?
+  aiRiskAnalysis Json?
   estimatedValue Float?
-  
+
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
-  
+
   // Relations
   consultations  Consultation[]
   agentSessions  AgentSession[] @relation("CaseSessions")
   documents       Document[]
 
-  // Indexes correctly placed for Case queries
   @@index([clientId])
   @@index([lawyerId])
   @@index([status])
+  // ADDED: Composite index to optimize the open-case limit queries.
+  @@index([clientId, status])
 }
 
 model Consultation {
   id           String     @id @default(uuid())
   caseBriefId  String
   caseBrief    CaseBrief  @relation(fields: [caseBriefId], references: [id], onDelete: Cascade)
-  
-  webrtcRoomId String     @unique // Unique meeting identifier for frontend matching
+
+  webrtcRoomId String     @unique
   scheduledAt  DateTime
   isCompleted  Boolean    @default(false)
-  
+
   createdAt    DateTime   @default(now())
 
-  // Indexes for WebRTC and case lookups
   @@index([caseBriefId])
-  @@index([webrtcRoomId])
+  // REMOVED @@index([webrtcRoomId]): Redundant due to @unique constraint.
 }
 
 model AgentSession {
   id          String     @id @default(uuid())
-  clientId    String     // Ties to the User model id
+  clientId    String
   user        User       @relation("ClientSessions", fields: [clientId], references: [id], onDelete: Cascade)
-  caseBriefId String?  
+  caseBriefId String?
   caseBrief   CaseBrief? @relation("CaseSessions", fields: [caseBriefId], references: [id], onDelete: SetNull)
-  status      String     @default("PROCESSING") // Can be PROCESSING, COMPLETED, or FAILED
-  content     String?    @db.Text // Where the final AI response goes
-  metadata    Json?      // Stores what step the AI is on
-  messages    Json?      // for conversation history
-  
+  status      String     @default("PROCESSING")
+  content     String?    @db.Text
+  metadata    Json?
+  messages    Json?
+
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
   @@index([clientId])
   @@index([status])
+  // ADDED: Foreign key index for efficient session-scoped joins.
+  @@index([caseBriefId])
 }
 
 model Document {
   id            String     @id @default(uuid())
   caseBriefId   String
   caseBrief     CaseBrief  @relation(fields: [caseBriefId], references: [id], onDelete: Cascade)
-  fileUrl       String      @unique
+  fileUrl       String     @unique
   extractedText String     @db.Text
-  redlines      Json?      // populated by generateDocumentRedlines
+  redlines      Json?
   createdAt     DateTime   @default(now())
 
   @@index([caseBriefId])
@@ -139,14 +141,13 @@ model DirectMessage {
   content     String   @db.Text
   createdAt   DateTime @default(now())
 
-  // The case this message belongs to
   caseBriefId String
   caseBrief   CaseBrief @relation(fields: [caseBriefId], references: [id], onDelete: Cascade)
 
-  // The user (Client or Lawyer) who sent the message
   senderId    String
   sender      User      @relation(fields: [senderId], references: [id], onDelete: Cascade)
 
-  @@index([caseBriefId])
-  @@index([createdAt])
+  // Composite index to cover the filter (caseBriefId) and sort (createdAt) 
+  // operations in a single index scan for messaging threads.
+  @@index([caseBriefId, createdAt])
 }
